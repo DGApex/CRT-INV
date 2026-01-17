@@ -1,0 +1,5 @@
+{
+  "name": "CRTIC Inventory Manager",
+  "description": "A comprehensive equipment loan and internal assignment management system designed for CRTIC. Handles temporary sessions (Flow A) and permanent internal assignments (Flow B) with strict status control.",
+  "requestFramePermissions": []
+}
