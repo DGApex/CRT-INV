@@ -389,29 +389,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
 
       try {
-          console.log(`Sending [${action}] to Sheets... Payload:`, payload);
+          console.log(`Sending [${action}] to Sheets via no-cors... Payload:`, payload);
           
-          // IMPORTANT: Changing to 'cors' mode to ensure we wait for the GAS response.
-          // This prevents the frontend from re-reading old data before the new write is complete.
+          // 1. FIRE AND FORGET (with keepalive)
           await fetch(scriptUrl, {
               method: 'POST',
-              redirect: 'follow', 
+              mode: 'no-cors', // Opaque, avoids CORS errors
+              cache: 'no-cache',
+              credentials: 'omit', // Avoid cookie issues
+              keepalive: true, // IMPORTANT: Keeps request alive if UI unmounts
               headers: { 
                   'Content-Type': 'text/plain;charset=utf-8' 
               },
               body: bodyPayload
           });
           
-          // Small safety buffer for propagation
-          await new Promise(resolve => setTimeout(resolve, 500));
+          // 2. FORCED DELAY (The user's specific request)
+          // We wait exactly 2 seconds to allow GAS to process the write.
+          console.log("Waiting 2s for Sheets propagation...");
+          await new Promise(resolve => setTimeout(resolve, 2000));
           
-          console.log("Write success. Re-syncing...");
+          // 3. RE-SYNC
+          // Now that we waited, we pull the new data to confirm the write.
+          console.log("Re-syncing...");
           await syncFromSheets();
 
       } catch (e) {
           console.error(`Network Error sending [${action}]:`, e);
-          alert(`Error de conexión: No se pudo conectar con Google Sheets. Verifique la consola.`);
-          throw e;
+          // Don't alert aggressively in no-cors, just log it. 
+          // The optimistic UI update handles the user experience.
       }
   };
 
@@ -429,8 +435,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const statusForSheet = isInternalUser ? 'Asignado planta' : 'En uso';
     const statusForApp = isInternalUser ? EquipmentStatus.ASSIGNED_INTERNAL : EquipmentStatus.IN_USE;
 
-    // SANITIZE DATA FOR STORAGE STRING
-    // Replace pipes with hyphens to avoid breaking the parser in syncFromSheets
+    // SANITIZE DATA
     const cleanProject = sessionData.projectName.replace(/\|/g, '-');
     const cleanStart = sessionData.startDate.includes('T') ? sessionData.startDate.split('T')[0] : sessionData.startDate;
     const cleanEnd = sessionData.endDate ? (sessionData.endDate.includes('T') ? sessionData.endDate.split('T')[0] : sessionData.endDate) : '';
@@ -442,7 +447,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const uniqueItems = Array.from(new Set(sessionData.items || []));
         
         updates = uniqueItems.map(id => ({ 
-            equipmentId: getRawId(id), // IMPORTANT: Clean ID before sending
+            equipmentId: getRawId(id), // Clean ID
             status: statusForSheet, 
             condition: metaTag 
         }));
@@ -455,12 +460,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     // 2. CLOUD SYNC
     if (updates.length > 0) {
-        try {
-            await sendToCloud('UPDATE_STATUS', { updates });
-        } catch (e) {
-            console.error("Failed to sync new session to cloud", e);
-            throw e;
-        }
+        // We await this so the UI shows "Guardando..." for the 2s duration
+        await sendToCloud('UPDATE_STATUS', { updates });
     }
   };
 
@@ -478,11 +479,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       
       if (session.items.includes(equipmentId)) return prev;
 
-      // SANITIZE
       const cleanProject = session.projectName.replace(/\|/g, '-');
       const cleanStart = session.startDate.includes('T') ? session.startDate.split('T')[0] : session.startDate;
       const cleanEnd = session.endDate ? (session.endDate.includes('T') ? session.endDate.split('T')[0] : session.endDate) : '';
-      
+
       metaTag = `SESION|${session.id}|${cleanProject}|${cleanStart}|${cleanEnd}|${session.userId}|${session.type}`;
       const equipment = prev.equipment.find(e => e.id === equipmentId);
       
@@ -495,11 +495,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
 
     if (success) {
-        try {
-            await sendToCloud('UPDATE_STATUS', { updates: [{ equipmentId: getRawId(equipmentId), status: statusForSheet, condition: metaTag }] });
-        } catch (e) {
-            console.error("Failed to sync item add", e);
-        }
+        await sendToCloud('UPDATE_STATUS', { updates: [{ equipmentId: getRawId(equipmentId), status: statusForSheet, condition: metaTag }] });
     }
   };
 
@@ -511,11 +507,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return { ...prev, equipment: updatedEquipment, sessions: updatedSessions };
       });
       
-      try {
-        await sendToCloud('UPDATE_STATUS', { updates: [{ equipmentId: getRawId(equipmentId), status: 'Disponible', condition: cleanCondition }] });
-      } catch (e) {
-        console.error("Failed to sync item removal", e);
-      }
+      await sendToCloud('UPDATE_STATUS', { updates: [{ equipmentId: getRawId(equipmentId), status: 'Disponible', condition: cleanCondition }] });
   };
 
   const closeSession = async (sessionId: string, returnComment?: string) => {
@@ -601,12 +593,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
     
     if (success) {
-        try {
-            await sendToCloud('UPDATE_STATUS', { updates: [{ equipmentId: getRawId(data.equipmentId), status: 'Asignado planta' }] });
-        } catch (e) {
-             console.error("Failed to sync assignment", e);
-             throw e;
-        }
+        await sendToCloud('UPDATE_STATUS', { updates: [{ equipmentId: getRawId(data.equipmentId), status: 'Asignado planta' }] });
     }
   };
 
@@ -622,11 +609,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
       
       if (eqId) {
-          try {
-              await sendToCloud('UPDATE_STATUS', { updates: [{ equipmentId: getRawId(eqId), status: 'Disponible', condition: returnCondition }] });
-          } catch (e) {
-              console.error("Failed to sync assignment return", e);
-          }
+          await sendToCloud('UPDATE_STATUS', { updates: [{ equipmentId: getRawId(eqId), status: 'Disponible', condition: returnCondition }] });
       }
   };
 
