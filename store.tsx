@@ -389,35 +389,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
 
       try {
-          console.log(`Sending [${action}] to Sheets via no-cors... Payload:`, payload);
+          console.log(`Sending [${action}] to Sheets via no-cors...`);
           
-          // 1. FIRE AND FORGET (with keepalive)
           await fetch(scriptUrl, {
               method: 'POST',
-              mode: 'no-cors', // Opaque, avoids CORS errors
+              mode: 'no-cors', 
               cache: 'no-cache',
-              credentials: 'omit', // Avoid cookie issues
-              keepalive: true, // IMPORTANT: Keeps request alive if UI unmounts
+              credentials: 'omit', 
+              redirect: 'follow', // Ensures we follow GAS redirects
+              keepalive: true, 
               headers: { 
                   'Content-Type': 'text/plain;charset=utf-8' 
               },
               body: bodyPayload
           });
           
-          // 2. FORCED DELAY (The user's specific request)
-          // We wait exactly 2 seconds to allow GAS to process the write.
-          console.log("Waiting 2s for Sheets propagation...");
-          await new Promise(resolve => setTimeout(resolve, 2000));
+          // Increased timeout to 4000ms for GAS latency
+          console.log("Waiting 4s for Sheets propagation...");
+          await new Promise(resolve => setTimeout(resolve, 4000));
           
-          // 3. RE-SYNC
-          // Now that we waited, we pull the new data to confirm the write.
           console.log("Re-syncing...");
           await syncFromSheets();
 
       } catch (e) {
           console.error(`Network Error sending [${action}]:`, e);
-          // Don't alert aggressively in no-cors, just log it. 
-          // The optimistic UI update handles the user experience.
       }
   };
 
@@ -428,189 +423,197 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const addSession = async (sessionData: Omit<Session, 'id' | 'status' | 'items'> & { id?: string, items?: string[] }) => {
-    let updates: any[] = [];
     const newSessionId = sessionData.id || crypto.randomUUID();
     
+    // PREPARE CLOUD UPDATE FIRST (Synchronously)
     const isInternalUser = state.currentUser?.role === UserRole.PLANTA_CRTIC;
-    const statusForSheet = isInternalUser ? 'Asignado planta' : 'En uso';
+    // FIXED: Use Title Case to match typical Google Sheet Data Validation (Drop-downs are case-sensitive)
+    const statusForSheet = isInternalUser ? 'Asignado Planta' : 'En Uso'; 
     const statusForApp = isInternalUser ? EquipmentStatus.ASSIGNED_INTERNAL : EquipmentStatus.IN_USE;
 
-    // SANITIZE DATA
     const cleanProject = sessionData.projectName.replace(/\|/g, '-');
     const cleanStart = sessionData.startDate.includes('T') ? sessionData.startDate.split('T')[0] : sessionData.startDate;
     const cleanEnd = sessionData.endDate ? (sessionData.endDate.includes('T') ? sessionData.endDate.split('T')[0] : sessionData.endDate) : '';
 
     const metaTag = `SESION|${newSessionId}|${cleanProject}|${cleanStart}|${cleanEnd}|${sessionData.userId}|${sessionData.type}`;
+    const uniqueItems = Array.from(new Set(sessionData.items || []));
 
-    // 1. OPTIMISTIC UPDATE
+    const cloudUpdates = uniqueItems.map(id => ({ 
+        equipmentId: getRawId(id), 
+        status: statusForSheet, 
+        condition: metaTag 
+    }));
+
+    // OPTIMISTIC UPDATE
     setState(prev => {
-        const uniqueItems = Array.from(new Set(sessionData.items || []));
-        
-        updates = uniqueItems.map(id => ({ 
-            equipmentId: getRawId(id), // Clean ID
-            status: statusForSheet, 
-            condition: metaTag 
-        }));
-        
         const newSession: Session = { ...sessionData, id: newSessionId, status: SessionStatus.ACTIVE, items: uniqueItems };
         const updatedEquipment = prev.equipment.map(e => uniqueItems.includes(e.id) ? { ...e, status: statusForApp, condition: metaTag } : e);
-        
         return { ...prev, equipment: updatedEquipment, sessions: [newSession, ...prev.sessions] };
     });
 
-    // 2. CLOUD SYNC
-    if (updates.length > 0) {
-        // We await this so the UI shows "Guardando..." for the 2s duration
-        await sendToCloud('UPDATE_STATUS', { updates });
+    // SEND TO CLOUD
+    if (cloudUpdates.length > 0) {
+        await sendToCloud('UPDATE_STATUS', { updates: cloudUpdates });
     }
   };
 
   const addItemToSession = async (sessionId: string, equipmentId: string) => {
-    let success = false;
-    let metaTag = '';
-    
+    const session = state.sessions.find(s => s.id === sessionId);
+    const equipment = state.equipment.find(e => e.id === equipmentId);
+
+    if (!session || !equipment || equipment.status !== EquipmentStatus.AVAILABLE || session.items.includes(equipmentId)) {
+        alert("Equipo no disponible o ya agregado.");
+        return;
+    }
+
+    // PREPARE CLOUD PAYLOAD
     const isInternalUser = state.currentUser?.role === UserRole.PLANTA_CRTIC;
-    const statusForSheet = isInternalUser ? 'Asignado planta' : 'En uso';
+    // FIXED: Title Case
+    const statusForSheet = isInternalUser ? 'Asignado Planta' : 'En Uso';
     const statusForApp = isInternalUser ? EquipmentStatus.ASSIGNED_INTERNAL : EquipmentStatus.IN_USE;
 
+    const cleanProject = session.projectName.replace(/\|/g, '-');
+    const cleanStart = session.startDate.includes('T') ? session.startDate.split('T')[0] : session.startDate;
+    const cleanEnd = session.endDate ? (session.endDate.includes('T') ? session.endDate.split('T')[0] : session.endDate) : '';
+
+    const metaTag = `SESION|${session.id}|${cleanProject}|${cleanStart}|${cleanEnd}|${session.userId}|${session.type}`;
+    
+    const cloudUpdates = [{ 
+        equipmentId: getRawId(equipmentId), 
+        status: statusForSheet, 
+        condition: metaTag 
+    }];
+
+    // OPTIMISTIC UI
     setState(prev => {
-      const session = prev.sessions.find(s => s.id === sessionId);
-      if (!session) return prev;
-      
-      if (session.items.includes(equipmentId)) return prev;
-
-      const cleanProject = session.projectName.replace(/\|/g, '-');
-      const cleanStart = session.startDate.includes('T') ? session.startDate.split('T')[0] : session.startDate;
-      const cleanEnd = session.endDate ? (session.endDate.includes('T') ? session.endDate.split('T')[0] : session.endDate) : '';
-
-      metaTag = `SESION|${session.id}|${cleanProject}|${cleanStart}|${cleanEnd}|${session.userId}|${session.type}`;
-      const equipment = prev.equipment.find(e => e.id === equipmentId);
-      
-      if (!equipment || equipment.status !== EquipmentStatus.AVAILABLE) { alert("No disponible"); return prev; }
-      
-      success = true;
       const updatedEquipment = prev.equipment.map(e => e.id === equipmentId ? { ...e, status: statusForApp, condition: metaTag } : e);
       const updatedSessions = prev.sessions.map(s => s.id === sessionId ? { ...s, items: [...s.items, equipmentId] } : s);
       return { ...prev, equipment: updatedEquipment, sessions: updatedSessions };
     });
 
-    if (success) {
-        await sendToCloud('UPDATE_STATUS', { updates: [{ equipmentId: getRawId(equipmentId), status: statusForSheet, condition: metaTag }] });
-    }
+    await sendToCloud('UPDATE_STATUS', { updates: cloudUpdates });
   };
 
   const removeItemFromSession = async (sessionId: string, equipmentId: string) => {
       const cleanCondition = 'Devuelto';
+      
+      // PREPARE CLOUD PAYLOAD
+      const cloudUpdates = [{ 
+          equipmentId: getRawId(equipmentId), 
+          status: 'Disponible', // "Disponible" is usually correct, but matching case
+          condition: cleanCondition 
+      }];
+
       setState(prev => {
         const updatedEquipment = prev.equipment.map(e => e.id === equipmentId ? { ...e, status: EquipmentStatus.AVAILABLE, condition: cleanCondition } : e);
         const updatedSessions = prev.sessions.map(s => s.id === sessionId ? { ...s, items: s.items.filter(id => id !== equipmentId)} : s);
         return { ...prev, equipment: updatedEquipment, sessions: updatedSessions };
       });
       
-      await sendToCloud('UPDATE_STATUS', { updates: [{ equipmentId: getRawId(equipmentId), status: 'Disponible', condition: cleanCondition }] });
+      await sendToCloud('UPDATE_STATUS', { updates: cloudUpdates });
   };
 
   const closeSession = async (sessionId: string, returnComment?: string) => {
-    let itemsToReturn: string[] = [];
-    let closedSessionData: Session | undefined = undefined;
+    const session = state.sessions.find(s => s.id === sessionId);
+    if (!session) return;
+
     const finalComment = returnComment || 'Devuelto Ok';
-    
-    // Fallback date (Today)
     const now = new Date();
     const todayYMD = now.toLocaleDateString('en-CA'); 
+    const closingDate = session.endDate || now.toISOString();
 
+    // 1. PREPARE ITEM UPDATES FOR CLOUD
+    const itemsToReturn = session.items;
+    const cloudUpdates = itemsToReturn.map(id => ({ 
+        equipmentId: getRawId(id), 
+        status: 'Disponible', 
+        condition: finalComment 
+    }));
+
+    // 2. PREPARE LOG PAYLOAD
+    const responsibleUser = state.users.find(u => u.id === session.userId);
+    const itemIdsStr = session.items.map(id => getRawId(id)).join(',');
+    const itemNamesStr = session.items.map(id => {
+        const eq = state.equipment.find(e => e.id === id);
+        return eq ? eq.name : 'Desconocido';
+    }).join(', ');
+
+    const toLocalYMD = (dateStr: string) => {
+        if (!dateStr) return todayYMD; 
+        if (!dateStr.includes('T')) return dateStr;
+        return dateStr.split('T')[0];
+    };
+
+    const logPayload = {
+        SessionID: session.id,
+        Project: session.projectName,
+        UserID: session.userId,
+        UserName: responsibleUser ? responsibleUser.name : session.userId,
+        Start: toLocalYMD(session.startDate),
+        End: toLocalYMD(closingDate), 
+        Items: itemIdsStr,      
+        ItemNames: itemNamesStr, 
+        Type: session.type,
+        Observations: finalComment
+    };
+
+    // 3. OPTIMISTIC UPDATE
     setState(prev => {
-      const session = prev.sessions.find(s => s.id === sessionId);
-      if (!session) return prev;
-      itemsToReturn = session.items;
-      
-      const closingDate = session.endDate || now.toISOString();
-
-      closedSessionData = { ...session, status: SessionStatus.CLOSED, endDate: closingDate, observations: finalComment };
-      
+      const closedSessionData = { ...session, status: SessionStatus.CLOSED, endDate: closingDate, observations: finalComment };
       const updatedEquipment = prev.equipment.map(e => session.items.includes(e.id) ? { ...e, status: EquipmentStatus.AVAILABLE, condition: finalComment } : e);
       const updatedSessions = prev.sessions.filter(s => s.id !== sessionId); 
       return { ...prev, equipment: updatedEquipment, sessions: updatedSessions, history: [closedSessionData, ...prev.history] };
     });
 
-    if (closedSessionData) {
-        try {
-            if (itemsToReturn.length > 0) {
-                // SANITIZE ALL IDs
-                const updates = itemsToReturn.map(id => ({ equipmentId: getRawId(id), status: 'Disponible', condition: finalComment }));
-                await sendToCloud('UPDATE_STATUS', { updates });
-            }
-
-            const responsibleUser = state.users.find(u => u.id === (closedSessionData as Session).userId);
-            
-            // Log with original IDs
-            const itemIdsStr = (closedSessionData as Session).items.map(id => getRawId(id)).join(',');
-            
-            const itemNamesStr = (closedSessionData as Session).items.map(id => {
-                const eq = state.equipment.find(e => e.id === id);
-                return eq ? eq.name : 'Desconocido';
-            }).join(', ');
-
-            const toLocalYMD = (dateStr: string) => {
-                if (!dateStr) return todayYMD; 
-                if (!dateStr.includes('T')) return dateStr;
-                return dateStr.split('T')[0];
-            };
-
-            const sessionStart = (closedSessionData as Session).startDate;
-            const sessionEnd = (closedSessionData as Session).endDate || todayYMD;
-
-            const logPayload = {
-                SessionID: (closedSessionData as Session).id,
-                Project: (closedSessionData as Session).projectName,
-                UserID: (closedSessionData as Session).userId,
-                UserName: responsibleUser ? responsibleUser.name : (closedSessionData as Session).userId,
-                Start: toLocalYMD(sessionStart),
-                End: toLocalYMD(sessionEnd), 
-                Items: itemIdsStr,      
-                ItemNames: itemNamesStr, 
-                Type: (closedSessionData as Session).type,
-                Observations: finalComment
-            };
-
-            await sendToCloud('LOG_SESSION', { logData: logPayload });
-
-        } catch(e) {
-            console.error("Critical: Failed to save log.", e);
-        }
+    // 4. SEND TO CLOUD
+    if (cloudUpdates.length > 0) {
+        await sendToCloud('UPDATE_STATUS', { updates: cloudUpdates });
     }
+    await sendToCloud('LOG_SESSION', { logData: logPayload });
   };
 
   const addAssignment = async (data: Omit<InternalAssignment, 'id' | 'status'>) => {
-    let success = false;
+    const equipment = state.equipment.find(e => e.id === data.equipmentId);
+    if(!equipment || equipment.status !== EquipmentStatus.AVAILABLE) { 
+        alert("Equipo no disponible."); 
+        return; 
+    }
+
+    // PREPARE CLOUD
+    // FIXED: Title Case
+    const cloudUpdates = [{ 
+        equipmentId: getRawId(data.equipmentId), 
+        status: 'Asignado Planta' 
+    }];
+
+    // OPTIMISTIC
     setState(prev => {
-       const equipment = prev.equipment.find(e => e.id === data.equipmentId);
-       if(!equipment || equipment.status !== EquipmentStatus.AVAILABLE) { alert("No disponible"); return prev; }
-       success = true;
        const newAssignment: InternalAssignment = { ...data, id: crypto.randomUUID(), status: AssignmentStatus.ACTIVE };
        const updatedEquipment = prev.equipment.map(e => e.id === data.equipmentId ? { ...e, status: EquipmentStatus.ASSIGNED_INTERNAL } : e);
        return { ...prev, equipment: updatedEquipment, assignments: [newAssignment, ...prev.assignments] };
     });
     
-    if (success) {
-        await sendToCloud('UPDATE_STATUS', { updates: [{ equipmentId: getRawId(data.equipmentId), status: 'Asignado planta' }] });
-    }
+    await sendToCloud('UPDATE_STATUS', { updates: cloudUpdates });
   };
 
   const returnAssignment = async (assignmentId: string, returnCondition: string) => {
-      let eqId = '';
+      const assignment = state.assignments.find(a => a.id === assignmentId);
+      if(!assignment) return;
+      
+      // PREPARE CLOUD
+      const cloudUpdates = [{ 
+          equipmentId: getRawId(assignment.equipmentId), 
+          status: 'Disponible', 
+          condition: returnCondition 
+      }];
+
       setState(prev => {
-          const assignment = prev.assignments.find(a => a.id === assignmentId);
-          if(!assignment) return prev;
-          eqId = assignment.equipmentId;
           const updatedEquipment = prev.equipment.map(e => e.id === assignment.equipmentId ? { ...e, status: EquipmentStatus.AVAILABLE, condition: returnCondition } : e);
           const updatedAssignments = prev.assignments.map(a => a.id === assignmentId ? { ...a, status: AssignmentStatus.RETURNED, returnDate: new Date().toISOString(), returnCondition } : a);
           return { ...prev, equipment: updatedEquipment, assignments: updatedAssignments };
       });
       
-      if (eqId) {
-          await sendToCloud('UPDATE_STATUS', { updates: [{ equipmentId: getRawId(eqId), status: 'Disponible', condition: returnCondition }] });
-      }
+      await sendToCloud('UPDATE_STATUS', { updates: cloudUpdates });
   };
 
   return (
