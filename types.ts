@@ -4,6 +4,7 @@ export enum EquipmentStatus {
   IN_USE = 'En uso',
   ASSIGNED_INTERNAL = 'Asignado interno',
   MAINTENANCE = 'Mantención', // Maps to "En reparación" / "Dañado"
+  UNAVAILABLE = 'No Disponible' // Fallback for generic occupied status
 }
 
 // Categorías oficiales

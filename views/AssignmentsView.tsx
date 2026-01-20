@@ -7,17 +7,26 @@ import { PlusIcon } from '../components/Icons';
 export const AssignmentsView: React.FC = () => {
   const { assignments, users, equipment, addAssignment, returnAssignment } = useAppStore();
   const [isAdding, setIsAdding] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [formData, setFormData] = useState({ userId: '', equipmentId: '', initialCondition: 'Good' });
   const activeAssignments = assignments.filter(a => a.status === AssignmentStatus.ACTIVE);
   const staffUsers = users.filter(u => u.role === UserRole.PLANTA_CRTIC);
   const availableEquipment = equipment.filter(e => e.status === EquipmentStatus.AVAILABLE);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if(!formData.userId || !formData.equipmentId) return;
-    addAssignment({ userId: formData.userId, equipmentId: formData.equipmentId, initialCondition: formData.initialCondition, assignedDate: new Date().toISOString() });
-    setIsAdding(false);
-    setFormData({ userId: '', equipmentId: '', initialCondition: 'Good' });
+    
+    setIsSubmitting(true);
+    try {
+        await addAssignment({ userId: formData.userId, equipmentId: formData.equipmentId, initialCondition: formData.initialCondition, assignedDate: new Date().toISOString() });
+        setIsAdding(false);
+        setFormData({ userId: '', equipmentId: '', initialCondition: 'Good' });
+    } catch(e) {
+        alert("Error al sincronizar asignación.");
+    } finally {
+        setIsSubmitting(false);
+    }
   };
 
   const handleReturn = (id: string) => {
@@ -32,7 +41,7 @@ export const AssignmentsView: React.FC = () => {
           <h2 className="text-3xl font-bold text-white">Asignaciones Internas (Flow B)</h2>
           <p className="text-slate-400">Equipos asignados a staff de planta (largo plazo).</p>
         </div>
-        <button onClick={() => setIsAdding(true)} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg font-medium transition-colors"><PlusIcon className="w-4 h-4" /> Nueva Asignación</button>
+        <button onClick={() => setIsAdding(true)} disabled={isSubmitting} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg font-medium transition-colors disabled:opacity-50"><PlusIcon className="w-4 h-4" /> Nueva Asignación</button>
       </div>
 
       {isAdding && (
@@ -41,25 +50,27 @@ export const AssignmentsView: React.FC = () => {
               <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <div>
                       <label className="block text-xs font-semibold text-slate-500 mb-1">Funcionario</label>
-                      <select required className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-white" value={formData.userId} onChange={e => setFormData({...formData, userId: e.target.value})}>
+                      <select required disabled={isSubmitting} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-white disabled:opacity-50" value={formData.userId} onChange={e => setFormData({...formData, userId: e.target.value})}>
                           <option value="">Seleccionar...</option>
                           {staffUsers.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
                       </select>
                   </div>
                   <div>
                       <label className="block text-xs font-semibold text-slate-500 mb-1">Equipo (Disponible)</label>
-                      <select required className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-white" value={formData.equipmentId} onChange={e => setFormData({...formData, equipmentId: e.target.value})}>
+                      <select required disabled={isSubmitting} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-white disabled:opacity-50" value={formData.equipmentId} onChange={e => setFormData({...formData, equipmentId: e.target.value})}>
                           <option value="">Seleccionar...</option>
                           {availableEquipment.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
                       </select>
                   </div>
                    <div>
                       <label className="block text-xs font-semibold text-slate-500 mb-1">Estado Inicial</label>
-                      <input type="text" required className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-white" value={formData.initialCondition} onChange={e => setFormData({...formData, initialCondition: e.target.value})}/>
+                      <input type="text" required disabled={isSubmitting} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-white disabled:opacity-50" value={formData.initialCondition} onChange={e => setFormData({...formData, initialCondition: e.target.value})}/>
                   </div>
                   <div className="md:col-span-3 flex justify-end gap-2 mt-2">
-                      <button type="button" onClick={() => setIsAdding(false)} className="px-4 py-2 text-slate-400 text-sm hover:text-white">Cancelar</button>
-                      <button type="submit" className="px-6 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-500">Confirmar</button>
+                      <button type="button" disabled={isSubmitting} onClick={() => setIsAdding(false)} className="px-4 py-2 text-slate-400 text-sm hover:text-white disabled:opacity-50">Cancelar</button>
+                      <button type="submit" disabled={isSubmitting} className="px-6 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-500 disabled:opacity-50 flex items-center gap-2">
+                         {isSubmitting ? 'Guardando...' : 'Confirmar'}
+                      </button>
                   </div>
               </form>
           </div>

@@ -16,8 +16,8 @@ const ReservationModal: React.FC<ReservationModalProps> = ({ isOpen, preSelected
     const { currentUser, users, equipment, addSession } = useAppStore();
     const isInternal = currentUser?.role === UserRole.PLANTA_CRTIC;
 
-    // Determine fixed session type based on role
-    const getFixedType = () => {
+    // Determine default session type based on role, but allow change
+    const getDefaultType = () => {
         if (!currentUser) return SessionType.EVENT;
         const role = String(currentUser.role).toLowerCase().trim();
         
@@ -25,16 +25,22 @@ const ReservationModal: React.FC<ReservationModalProps> = ({ isOpen, preSelected
         if (role.includes('docente')) return SessionType.WORKSHOP;
         if (role.includes('planta') || role.includes('admin')) return SessionType.INTERNAL_PRODUCTION;
         
-        return SessionType.EVENT; // Default for Externals
+        return SessionType.EVENT; 
     };
 
-    const fixedType = getFixedType();
+    // Filter session types based on role (Requirement: Hide Internal Prod for non-admins)
+    const availableSessionTypes = useMemo(() => {
+        return Object.values(SessionType).filter(t => {
+            if (t === SessionType.INTERNAL_PRODUCTION && !isInternal) return false;
+            return true;
+        });
+    }, [isInternal]);
 
     // LOCAL STATE
     const [form, setForm] = useState({
         userId: currentUser?.id || '',
         projectName: '',
-        type: fixedType,
+        type: getDefaultType(),
         startDate: preSelectedDate ? preSelectedDate.toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
         endDate: '',
     });
@@ -42,6 +48,7 @@ const ReservationModal: React.FC<ReservationModalProps> = ({ isOpen, preSelected
     // START WITH EMPTY OR PRE-SELECTED ITEM
     const [selectedItems, setSelectedItems] = useState<string[]>(preSelectedItemId ? [preSelectedItemId] : []);
     const [search, setSearch] = useState('');
+    const [isSubmitting, setIsSubmitting] = useState(false);
 
     // FILTER LOGIC: EXCLUDE SELECTED ITEMS TO PREVENT DUPLICATES
     const availableEquipment = useMemo(() => {
@@ -60,15 +67,23 @@ const ReservationModal: React.FC<ReservationModalProps> = ({ isOpen, preSelected
         });
     };
 
-    const handleSubmit = (e: React.FormEvent) => {
+    const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!form.userId || !form.projectName || !form.startDate || !form.endDate) {
             alert("Completa todos los campos obligatorios.");
             return;
         }
-        addSession({ ...form, endDate: form.endDate || undefined, items: selectedItems });
-        alert("Reserva creada exitosamente.");
-        onClose();
+
+        setIsSubmitting(true);
+        try {
+            await addSession({ ...form, endDate: form.endDate || undefined, items: selectedItems });
+            alert("Reserva creada exitosamente y sincronizada.");
+            onClose();
+        } catch (e) {
+            alert("Hubo un error al sincronizar con la hoja de cálculo. La reserva puede no haberse guardado en la nube.");
+        } finally {
+            setIsSubmitting(false);
+        }
     };
 
     if (!isOpen) return null;
@@ -78,14 +93,14 @@ const ReservationModal: React.FC<ReservationModalProps> = ({ isOpen, preSelected
             <div className="bg-neutral-900 rounded-t-2xl md:rounded-2xl shadow-2xl w-full max-w-lg animate-in slide-in-from-bottom-4 md:zoom-in-95 border border-neutral-800 text-white flex flex-col max-h-[90vh]">
                 <div className="p-5 border-b border-neutral-800 flex justify-between items-center">
                     <h3 className="text-xl font-bold flex items-center gap-2">Crear Reserva</h3>
-                    <button onClick={onClose} className="text-neutral-500 hover:text-white"><XIcon className="w-6 h-6"/></button>
+                    <button onClick={onClose} disabled={isSubmitting} className="text-neutral-500 hover:text-white disabled:opacity-50"><XIcon className="w-6 h-6"/></button>
                 </div>
                 
                 <div className="overflow-y-auto p-5 space-y-4">
                     <form id="resForm" onSubmit={handleSubmit} className="space-y-4">
                         <div>
                             <label className="text-xs font-bold text-neutral-500 uppercase">Proyecto / Actividad</label>
-                            <input type="text" required className="w-full mt-1 bg-neutral-950 border border-neutral-700 rounded-xl p-3 text-sm focus:border-white outline-none text-white" 
+                            <input type="text" required disabled={isSubmitting} className="w-full mt-1 bg-neutral-950 border border-neutral-700 rounded-xl p-3 text-sm focus:border-white outline-none text-white disabled:opacity-50" 
                                 placeholder="Nombre..." value={form.projectName} onChange={e => setForm({...form, projectName: e.target.value})} />
                         </div>
                         
@@ -93,7 +108,7 @@ const ReservationModal: React.FC<ReservationModalProps> = ({ isOpen, preSelected
                             <div>
                                 <label className="text-xs font-bold text-neutral-500 uppercase">Responsable</label>
                                 {isInternal ? (
-                                    <select required className="w-full mt-1 bg-neutral-950 border border-neutral-700 rounded-xl p-3 text-sm text-white" value={form.userId} onChange={e => setForm({...form, userId: e.target.value})}>
+                                    <select required disabled={isSubmitting} className="w-full mt-1 bg-neutral-950 border border-neutral-700 rounded-xl p-3 text-sm text-white disabled:opacity-50" value={form.userId} onChange={e => setForm({...form, userId: e.target.value})}>
                                         <option value="">Seleccionar...</option>
                                         {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
                                     </select>
@@ -103,27 +118,20 @@ const ReservationModal: React.FC<ReservationModalProps> = ({ isOpen, preSelected
                             </div>
                             <div>
                                 <label className="text-xs font-bold text-neutral-500 uppercase">Tipo Uso</label>
-                                {/* Allow change if internal user, otherwise locked */}
-                                {isInternal ? (
-                                    <select className="w-full mt-1 bg-neutral-950 border border-neutral-700 rounded-xl p-3 text-sm text-white" value={form.type} onChange={e => setForm({...form, type: e.target.value as SessionType})}>
-                                        {Object.values(SessionType).map(t => <option key={t} value={t}>{t}</option>)}
-                                    </select>
-                                ) : (
-                                    <div className="w-full mt-1 bg-neutral-800 border border-neutral-700 rounded-xl p-3 text-sm text-neutral-300 truncate">
-                                        {fixedType}
-                                    </div>
-                                )}
+                                <select disabled={isSubmitting} className="w-full mt-1 bg-neutral-950 border border-neutral-700 rounded-xl p-3 text-sm text-white disabled:opacity-50" value={form.type} onChange={e => setForm({...form, type: e.target.value as SessionType})}>
+                                    {availableSessionTypes.map(t => <option key={t} value={t}>{t}</option>)}
+                                </select>
                             </div>
                         </div>
 
                         <div className="grid grid-cols-2 gap-3">
                             <div>
                                 <label className="text-xs font-bold text-neutral-500 uppercase">Desde</label>
-                                <input type="date" required className="w-full mt-1 bg-neutral-950 border border-neutral-700 rounded-xl p-3 text-sm text-white" value={form.startDate} onChange={e => setForm({...form, startDate: e.target.value})} />
+                                <input type="date" required disabled={isSubmitting} className="w-full mt-1 bg-neutral-950 border border-neutral-700 rounded-xl p-3 text-sm text-white disabled:opacity-50" value={form.startDate} onChange={e => setForm({...form, startDate: e.target.value})} />
                             </div>
                             <div>
                                 <label className="text-xs font-bold text-neutral-500 uppercase">Hasta</label>
-                                <input type="date" required className="w-full mt-1 bg-neutral-950 border border-neutral-700 rounded-xl p-3 text-sm text-white" value={form.endDate} onChange={e => setForm({...form, endDate: e.target.value})} />
+                                <input type="date" required disabled={isSubmitting} className="w-full mt-1 bg-neutral-950 border border-neutral-700 rounded-xl p-3 text-sm text-white disabled:opacity-50" value={form.endDate} onChange={e => setForm({...form, endDate: e.target.value})} />
                             </div>
                         </div>
                     </form>
@@ -139,7 +147,7 @@ const ReservationModal: React.FC<ReservationModalProps> = ({ isOpen, preSelected
                                 {selectedItems.map(id => {
                                     const item = equipment.find(e => e.id === id);
                                     return (
-                                        <button key={id} onClick={() => toggleItem(id)} className="bg-sky-900/30 border border-sky-500/30 text-sky-200 text-xs pl-3 pr-2 py-1 rounded-full flex items-center gap-1 hover:bg-red-900/30 hover:border-red-500/30 hover:text-red-200 transition-all">
+                                        <button key={id} disabled={isSubmitting} onClick={() => toggleItem(id)} className="bg-sky-900/30 border border-sky-500/30 text-sky-200 text-xs pl-3 pr-2 py-1 rounded-full flex items-center gap-1 hover:bg-red-900/30 hover:border-red-500/30 hover:text-red-200 transition-all disabled:opacity-50">
                                             {item?.name} <XIcon className="w-3 h-3" />
                                         </button>
                                     );
@@ -150,7 +158,7 @@ const ReservationModal: React.FC<ReservationModalProps> = ({ isOpen, preSelected
                         {/* Search */}
                         <div className="relative mb-2">
                             <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-500" />
-                            <input type="text" placeholder="Buscar equipo disponible..." className="w-full bg-neutral-950 border border-neutral-800 rounded-xl pl-9 pr-3 py-2 text-sm text-white outline-none focus:border-neutral-500"
+                            <input type="text" disabled={isSubmitting} placeholder="Buscar equipo disponible..." className="w-full bg-neutral-950 border border-neutral-800 rounded-xl pl-9 pr-3 py-2 text-sm text-white outline-none focus:border-neutral-500 disabled:opacity-50"
                                 value={search} onChange={e => setSearch(e.target.value)} />
                         </div>
 
@@ -160,10 +168,11 @@ const ReservationModal: React.FC<ReservationModalProps> = ({ isOpen, preSelected
                                 <div className="p-4 text-center text-xs text-neutral-600">No se encontraron equipos disponibles con ese nombre.</div>
                             ) : (
                                 availableEquipment.map(item => (
-                                    <div key={item.id} onClick={() => toggleItem(item.id)} className="p-2 border-b border-neutral-800/50 flex justify-between items-center cursor-pointer hover:bg-neutral-800 transition-colors group">
+                                    <div key={item.id} onClick={() => !isSubmitting && toggleItem(item.id)} className={`p-2 border-b border-neutral-800/50 flex justify-between items-center cursor-pointer hover:bg-neutral-800 transition-colors group ${isSubmitting ? 'opacity-50 pointer-events-none' : ''}`}>
                                         <div>
                                             <p className="text-sm text-neutral-300 font-medium group-hover:text-white">{item.name}</p>
-                                            <p className="text-[10px] text-neutral-500">{item.id}</p>
+                                            {/* CLEAN ID DISPLAY */}
+                                            <p className="text-[10px] text-neutral-500">{item.id.split('_DUPE_')[0]}</p>
                                         </div>
                                         <PlusIcon className="w-4 h-4 text-neutral-500 group-hover:text-sky-400" />
                                     </div>
@@ -174,8 +183,10 @@ const ReservationModal: React.FC<ReservationModalProps> = ({ isOpen, preSelected
                 </div>
 
                 <div className="p-5 border-t border-neutral-800 bg-neutral-900 rounded-b-2xl mt-auto flex gap-3">
-                    <button onClick={onClose} className="flex-1 py-3 bg-neutral-800 rounded-xl font-medium text-neutral-300 hover:bg-neutral-700">Cancelar</button>
-                    <button type="submit" form="resForm" className="flex-1 py-3 bg-sky-600 text-white rounded-xl font-bold hover:bg-sky-500 shadow-lg shadow-sky-900/20">Confirmar</button>
+                    <button onClick={onClose} disabled={isSubmitting} className="flex-1 py-3 bg-neutral-800 rounded-xl font-medium text-neutral-300 hover:bg-neutral-700 disabled:opacity-50">Cancelar</button>
+                    <button type="submit" form="resForm" disabled={isSubmitting} className="flex-1 py-3 bg-sky-600 text-white rounded-xl font-bold hover:bg-sky-500 shadow-lg shadow-sky-900/20 disabled:opacity-50 flex justify-center items-center gap-2">
+                        {isSubmitting ? <span className="animate-pulse">Guardando en Sheets...</span> : 'Confirmar'}
+                    </button>
                 </div>
             </div>
         </div>
@@ -304,7 +315,11 @@ export const Dashboard: React.FC = () => {
       if (!searchQuery.trim()) return { categories: [], items: [] };
       const q = searchQuery.toLowerCase();
       const matchedCategories = categoryCloud.filter(([cat]) => cat.toLowerCase().includes(q)).map(([cat]) => cat);
-      const matchedItems = state.equipment.filter(e => e.name.toLowerCase().includes(q)).slice(0, 8);
+      // Added ID check to filtering
+      const matchedItems = state.equipment.filter(e => 
+          e.name.toLowerCase().includes(q) || 
+          e.id.toLowerCase().includes(q)
+      ).slice(0, 8);
       return { categories: matchedCategories, items: matchedItems };
   }, [searchQuery, categoryCloud, state.equipment]);
 
@@ -314,7 +329,12 @@ export const Dashboard: React.FC = () => {
     if (modalConfig.type === 'CATEGORY') return state.equipment.filter(e => e.category === modalConfig.value);
     if (modalConfig.type === 'SEARCH') {
         const q = modalConfig.value.toLowerCase();
-        return state.equipment.filter(e => e.name.toLowerCase().includes(q) || e.category.toLowerCase().includes(q));
+        // Added ID check to filtering
+        return state.equipment.filter(e => 
+            e.name.toLowerCase().includes(q) || 
+            e.category.toLowerCase().includes(q) ||
+            e.id.toLowerCase().includes(q)
+        );
     }
     return [];
   }, [modalConfig, state.equipment]);
@@ -420,14 +440,25 @@ export const Dashboard: React.FC = () => {
             <h2 className="text-3xl md:text-5xl font-bold text-white">Hola, {currentUser?.name.split(' ')[0]}</h2>
             <div ref={searchRef} className="relative max-w-2xl mx-auto z-50">
                 <form onSubmit={handleSearchSubmit}>
-                    <input type="text" placeholder="Buscar equipos..." className="w-full pl-6 pr-20 py-4 rounded-2xl bg-neutral-950 border-2 border-neutral-800 text-white focus:border-neutral-500 outline-none text-lg"
+                    <input type="text" placeholder="Buscar equipos (Nombre o ID)..." className="w-full pl-6 pr-20 py-4 rounded-2xl bg-neutral-950 border-2 border-neutral-800 text-white focus:border-neutral-500 outline-none text-lg"
                         value={searchQuery} onChange={(e) => { setSearchQuery(e.target.value); setShowSuggestions(true); }} onFocus={() => setShowSuggestions(true)} />
                     <button type="submit" className="absolute right-2 top-2 bottom-2 bg-white text-black px-6 rounded-xl font-bold">Ir</button>
                 </form>
                 {showSuggestions && searchQuery.trim() && (
                     <div className="absolute top-full left-0 right-0 mt-2 bg-neutral-900 rounded-xl border border-neutral-700 shadow-2xl z-[100] text-left max-h-64 overflow-y-auto">
                          {suggestions.categories.map(cat => <button key={cat} onClick={() => { setModalConfig({ type: 'CATEGORY', value: cat, title: cat }); setShowSuggestions(false); }} className="w-full text-left px-4 py-3 border-b border-neutral-800 text-neutral-300 hover:bg-neutral-800">{cat}</button>)}
-                         {suggestions.items.map(item => <button key={item.id} onClick={() => { setModalConfig({ type: 'SEARCH', value: item.name, title: item.name }); setShowSuggestions(false); }} className="w-full text-left px-4 py-3 border-b border-neutral-800 text-white hover:bg-neutral-800">{item.name}</button>)}
+                         {suggestions.items.map(item => (
+                             <button 
+                                key={item.id} 
+                                onClick={() => { setModalConfig({ type: 'SEARCH', value: item.name, title: item.name }); setShowSuggestions(false); }} 
+                                className="w-full text-left px-4 py-3 border-b border-neutral-800 text-white hover:bg-neutral-800 flex justify-between items-center group"
+                             >
+                                 <span className="truncate pr-2">{item.name}</span>
+                                 <span className="text-[10px] text-neutral-500 font-mono whitespace-nowrap group-hover:text-neutral-300">
+                                     {item.id.split('_DUPE_')[0]}
+                                 </span>
+                             </button>
+                         ))}
                     </div>
                 )}
             </div>
@@ -522,11 +553,15 @@ export const Dashboard: React.FC = () => {
                 {adminSessions.map(s => {
                     const overdue = isOverdue(s.endDate);
                     return (
-                    <div key={s.id} className="mb-2 p-3 bg-neutral-950 rounded border border-neutral-800 flex justify-between items-center group">
+                    // VISUAL UPDATE: Now using CYAN styling to mimic assignments for Admin Sessions
+                    <div key={s.id} className="mb-2 p-3 bg-neutral-950 rounded border border-cyan-900/40 flex justify-between items-center group">
                         <div>
+                             <div className="flex items-center gap-2 mb-1">
+                                <span className="text-[10px] font-bold bg-cyan-900/30 text-cyan-400 px-1.5 py-0.5 rounded border border-cyan-800/50 uppercase tracking-tight">RESERVA ADMIN (Planta)</span>
+                             </div>
                              <p className="text-sm text-white font-bold">{s.projectName}</p>
                              <p className="text-xs text-neutral-500">
-                                 Proyecto Interno • {s.items.length} items
+                                 {s.items.length} items • {new Date(s.startDate).toLocaleDateString()}
                                  {overdue && <span className="ml-2 text-red-500 font-bold">VENCIDO</span>}
                              </p>
                         </div>
@@ -561,7 +596,8 @@ export const Dashboard: React.FC = () => {
                         <tbody>
                             {filteredEquipment.map(item => (
                                 <tr key={item.id} className="border-b border-neutral-800 last:border-0">
-                                    <td className="p-3 font-mono text-xs text-neutral-500">{item.id}</td>
+                                    {/* CLEAN ID DISPLAY IN MODAL */}
+                                    <td className="p-3 font-mono text-xs text-neutral-500">{item.id.split('_DUPE_')[0]}</td>
                                     <td className="p-3 font-bold text-white">{item.name} <span className="text-xs font-normal text-neutral-500 ml-2">{item.category}</span></td>
                                     <td className="p-3"><span className={`text-xs px-2 py-1 rounded ${item.status === EquipmentStatus.AVAILABLE ? 'bg-orange-900/30 text-orange-400' : 'bg-neutral-800 text-neutral-500'}`}>{item.status}</span></td>
                                     <td className="p-3 text-right">

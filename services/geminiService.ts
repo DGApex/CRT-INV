@@ -1,22 +1,14 @@
 import { GoogleGenAI } from "@google/genai";
+import { AppState, EquipmentStatus } from "../types";
+
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 export const generateUsageReport = async (data: any, type: 'CURRENT' | 'HISTORY'): Promise<string> => {
-  // NOTA PARA EL DESARROLLADOR:
-  // No pegues tu API Key aquí directamente. 
-  // La variable 'process.env.API_KEY' se rellena automáticamente desde:
-  // 1. El archivo .env (si estás en local)
-  // 2. La configuración de Vercel (Settings > Environment Variables)
-  
-  const apiKey = process.env.API_KEY;
-
-  if (!apiKey) {
-    console.warn("API Key missing. Please set API_KEY in your Vercel environment variables.");
-    return "Error: API Key de Google no configurada en Vercel (Settings > Environment Variables).";
+  if (!process.env.API_KEY) {
+    return "API Key not configured. Unable to generate AI report.";
   }
 
   try {
-    const ai = new GoogleGenAI({ apiKey: apiKey });
-    
     let prompt = "";
     
     // Common instructions for clean output

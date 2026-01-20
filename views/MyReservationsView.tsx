@@ -33,6 +33,19 @@ export const MyReservationsView: React.FC = () => {
       }
   };
 
+  // --- DATE HELPER (Fixes -1 Day Bug) ---
+  const displayDate = (dateStr: string) => {
+      if (!dateStr) return '';
+      // Take first part (YYYY-MM-DD) to avoid timezone shifts
+      const cleanDate = dateStr.includes('T') ? dateStr.split('T')[0] : dateStr;
+      const parts = cleanDate.split('-');
+      if (parts.length === 3) {
+          // Return DD/MM/YYYY
+          return `${parts[2]}/${parts[1]}/${parts[0]}`;
+      }
+      return dateStr;
+  };
+
   return (
     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4">
       
@@ -62,7 +75,9 @@ export const MyReservationsView: React.FC = () => {
                     <div className="p-6 flex-1">
                         <div className="flex items-center gap-3 mb-4">
                             <span className="bg-sky-900/30 text-sky-400 border border-sky-500/30 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider">Activa</span>
-                            <span className="text-neutral-500 text-sm">{new Date(session.startDate).toLocaleDateString()}</span>
+                            <span className="text-neutral-500 text-sm font-mono">
+                                Inicio: <span className="text-white">{displayDate(session.startDate)}</span>
+                            </span>
                         </div>
                         <h3 className="text-2xl font-bold text-white mb-2">{session.projectName}</h3>
                         <p className="text-sm text-neutral-400">Tipo: {session.type}</p>
@@ -75,6 +90,8 @@ export const MyReservationsView: React.FC = () => {
                                     return (
                                         <span key={itemId} className="bg-neutral-800 border border-neutral-700 text-neutral-300 text-xs px-3 py-1.5 rounded-lg flex items-center gap-2">
                                             {item?.name || 'Item Desconocido'}
+                                            {/* Hide ID Suffix */}
+                                            <span className="text-[10px] text-neutral-600">{itemId.split('_DUPE_')[0]}</span>
                                         </span>
                                     );
                                 })}

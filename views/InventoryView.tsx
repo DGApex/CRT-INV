@@ -47,7 +47,8 @@ export const InventoryView: React.FC = () => {
             <tbody className="divide-y divide-neutral-800">
               {equipment.map((item) => (
                 <tr key={item.id} className="hover:bg-neutral-800 transition-colors">
-                  <td className="p-4 font-mono text-xs text-neutral-500">{item.id}</td>
+                  {/* HIDE SUFFIX VISUALLY */}
+                  <td className="p-4 font-mono text-xs text-neutral-500">{item.id.split('_DUPE_')[0]}</td>
                   <td className="p-4 font-medium text-white">{item.name}</td>
                   <td className="p-4 text-neutral-400">{item.category}</td>
                   <td className="p-4 text-neutral-500">{item.typeIT || '-'}</td>

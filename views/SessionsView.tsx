@@ -1,5 +1,5 @@
 
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useAppStore } from '../store';
 import { SessionStatus, SessionType, UserRole, EquipmentStatus } from '../types';
 import { PlusIcon, ArrowRightIcon, TrashIcon } from '../components/Icons';
@@ -7,12 +7,13 @@ import { PlusIcon, ArrowRightIcon, TrashIcon } from '../components/Icons';
 export const SessionsView: React.FC = () => {
   const { sessions, users, equipment, addSession, closeSession, addItemToSession, removeItemFromSession, currentUser } = useAppStore();
   const [isCreating, setIsCreating] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
-
-  const isInternal = currentUser?.role === UserRole.PLANTA_CRTIC;
   
-  // Determine fixed session type based on role
-  const getFixedType = () => {
+  const isInternal = currentUser?.role === UserRole.PLANTA_CRTIC;
+
+  // Determine default session type based on role, but allow change
+  const getDefaultType = () => {
         if (!currentUser) return SessionType.EVENT;
         const role = String(currentUser.role).toLowerCase().trim();
         
@@ -20,16 +21,21 @@ export const SessionsView: React.FC = () => {
         if (role.includes('docente')) return SessionType.WORKSHOP;
         if (role.includes('planta') || role.includes('admin')) return SessionType.INTERNAL_PRODUCTION;
         
-        return SessionType.EVENT; // Default for Externals
+        return SessionType.EVENT;
   };
-  const fixedType = getFixedType();
 
+  const availableSessionTypes = useMemo(() => {
+        return Object.values(SessionType).filter(t => {
+            if (t === SessionType.INTERNAL_PRODUCTION && !isInternal) return false;
+            return true;
+        });
+  }, [isInternal]);
 
   // New Session Form State
   const [newSessionData, setNewSessionData] = useState({
     userId: '',
     projectName: '',
-    type: fixedType,
+    type: getDefaultType(),
     startDate: new Date().toISOString().split('T')[0],
     endDate: ''
   });
@@ -40,18 +46,26 @@ export const SessionsView: React.FC = () => {
   const availableEquipment = equipment.filter(e => e.status === EquipmentStatus.AVAILABLE);
   const flowAUsers = users.filter(u => u.role !== UserRole.PLANTA_CRTIC);
 
-  const handleCreate = (e: React.FormEvent) => {
+  const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newSessionData.userId || !newSessionData.projectName || !newSessionData.startDate) return;
-    addSession({ 
-        userId: newSessionData.userId, 
-        projectName: newSessionData.projectName, 
-        type: newSessionData.type, 
-        startDate: newSessionData.startDate,
-        endDate: newSessionData.endDate || undefined
-    });
-    setIsCreating(false);
-    setNewSessionData({ userId: '', projectName: '', type: fixedType, startDate: new Date().toISOString().split('T')[0], endDate: '' });
+    
+    setIsSubmitting(true);
+    try {
+        await addSession({ 
+            userId: newSessionData.userId, 
+            projectName: newSessionData.projectName, 
+            type: newSessionData.type, 
+            startDate: newSessionData.startDate,
+            endDate: newSessionData.endDate || undefined
+        });
+        setIsCreating(false);
+        setNewSessionData({ userId: '', projectName: '', type: getDefaultType(), startDate: new Date().toISOString().split('T')[0], endDate: '' });
+    } catch (e) {
+        alert("Error al crear la reserva y sincronizar.");
+    } finally {
+        setIsSubmitting(false);
+    }
   };
 
   const handleCloseSession = (id: string) => {
@@ -141,7 +155,7 @@ export const SessionsView: React.FC = () => {
           <h2 className="text-3xl font-bold text-white">Reservas y Uso (Flow A)</h2>
           <p className="text-slate-400">Gestión de residentes, estudiantes y eventos temporales.</p>
         </div>
-        <button onClick={() => setIsCreating(true)} className="flex items-center gap-2 bg-slate-100 hover:bg-white text-slate-900 px-4 py-2 rounded-lg font-medium transition-colors"><PlusIcon className="w-4 h-4" /> Nueva Reserva</button>
+        <button onClick={() => setIsCreating(true)} disabled={isSubmitting} className="flex items-center gap-2 bg-slate-100 hover:bg-white text-slate-900 px-4 py-2 rounded-lg font-medium transition-colors disabled:opacity-50"><PlusIcon className="w-4 h-4" /> Nueva Reserva</button>
       </div>
 
       {isCreating && (
@@ -150,38 +164,34 @@ export const SessionsView: React.FC = () => {
             <form onSubmit={handleCreate} className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="md:col-span-2">
                     <label className="block text-xs font-semibold text-slate-500 mb-1">Nombre Proyecto</label>
-                    <input type="text" required className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-sm focus:ring-1 focus:ring-sky-500 outline-none text-white" value={newSessionData.projectName} onChange={e => setNewSessionData({...newSessionData, projectName: e.target.value})} placeholder="Ej: Residencia Artística Vol. 2"/>
+                    <input type="text" required disabled={isSubmitting} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-sm focus:ring-1 focus:ring-sky-500 outline-none text-white disabled:opacity-50" value={newSessionData.projectName} onChange={e => setNewSessionData({...newSessionData, projectName: e.target.value})} placeholder="Ej: Residencia Artística Vol. 2"/>
                 </div>
                 <div>
                     <label className="block text-xs font-semibold text-slate-500 mb-1">Responsable</label>
-                    <select required className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-sm focus:ring-1 focus:ring-sky-500 outline-none text-white" value={newSessionData.userId} onChange={e => setNewSessionData({...newSessionData, userId: e.target.value})}>
+                    <select required disabled={isSubmitting} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-sm focus:ring-1 focus:ring-sky-500 outline-none text-white disabled:opacity-50" value={newSessionData.userId} onChange={e => setNewSessionData({...newSessionData, userId: e.target.value})}>
                         <option value="">Seleccionar Usuario...</option>
                         {flowAUsers.map(u => <option key={u.id} value={u.id}>{u.name} ({u.role})</option>)}
                     </select>
                 </div>
                 <div>
                     <label className="block text-xs font-semibold text-slate-500 mb-1">Tipo de Uso</label>
-                    {isInternal ? (
-                        <select required className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-sm focus:ring-1 focus:ring-sky-500 outline-none text-white" value={newSessionData.type} onChange={e => setNewSessionData({...newSessionData, type: e.target.value as SessionType})}>
-                            {Object.values(SessionType).map(t => <option key={t} value={t}>{t}</option>)}
-                        </select>
-                    ) : (
-                        <div className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-sm text-slate-300">
-                             {fixedType}
-                        </div>
-                    )}
+                    <select required disabled={isSubmitting} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-sm focus:ring-1 focus:ring-sky-500 outline-none text-white disabled:opacity-50" value={newSessionData.type} onChange={e => setNewSessionData({...newSessionData, type: e.target.value as SessionType})}>
+                        {availableSessionTypes.map(t => <option key={t} value={t}>{t}</option>)}
+                    </select>
                 </div>
                  <div>
                     <label className="block text-xs font-semibold text-slate-500 mb-1">Fecha Inicio</label>
-                    <input type="date" required className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-sm focus:ring-1 focus:ring-sky-500 outline-none text-white" value={newSessionData.startDate} onChange={e => setNewSessionData({...newSessionData, startDate: e.target.value})} />
+                    <input type="date" required disabled={isSubmitting} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-sm focus:ring-1 focus:ring-sky-500 outline-none text-white disabled:opacity-50" value={newSessionData.startDate} onChange={e => setNewSessionData({...newSessionData, startDate: e.target.value})} />
                 </div>
                 <div>
                     <label className="block text-xs font-semibold text-slate-500 mb-1">Fecha Término (Opcional)</label>
-                    <input type="date" className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-sm focus:ring-1 focus:ring-sky-500 outline-none text-white" value={newSessionData.endDate} onChange={e => setNewSessionData({...newSessionData, endDate: e.target.value})} />
+                    <input type="date" disabled={isSubmitting} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-sm focus:ring-1 focus:ring-sky-500 outline-none text-white disabled:opacity-50" value={newSessionData.endDate} onChange={e => setNewSessionData({...newSessionData, endDate: e.target.value})} />
                 </div>
                 <div className="md:col-span-2 flex justify-end gap-2 mt-2">
-                    <button type="button" onClick={() => setIsCreating(false)} className="px-4 py-2 text-slate-400 text-sm hover:text-white">Cancelar</button>
-                    <button type="submit" className="px-6 py-2 bg-sky-600 text-white rounded-lg text-sm font-medium hover:bg-sky-500">Crear Reserva</button>
+                    <button type="button" disabled={isSubmitting} onClick={() => setIsCreating(false)} className="px-4 py-2 text-slate-400 text-sm hover:text-white disabled:opacity-50">Cancelar</button>
+                    <button type="submit" disabled={isSubmitting} className="px-6 py-2 bg-sky-600 text-white rounded-lg text-sm font-medium hover:bg-sky-500 disabled:opacity-50 flex items-center gap-2">
+                        {isSubmitting ? 'Guardando...' : 'Crear Reserva'}
+                    </button>
                 </div>
             </form>
         </div>

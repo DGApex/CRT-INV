@@ -1,48 +1,141 @@
+
 import React, { useMemo, useState } from 'react';
 import { useAppStore } from '../store';
-import { EquipmentStatus, UserRole } from '../types';
-import { BarChartIcon, DatabaseIcon, SparklesIcon, CalendarIcon, XIcon, AlertTriangleIcon } from '../components/Icons'; 
-import { generateUsageReport } from '../services/geminiService';
+import { EquipmentStatus, Equipment, Session } from '../types';
+import { BarChartIcon, DatabaseIcon, SparklesIcon, CalendarIcon, AlertTriangleIcon, XIcon, SearchIcon, ClipboardIcon } from '../components/Icons'; 
 
 export const AdminStatsView: React.FC = () => {
   const { equipment, sessions, history, users } = useAppStore();
-  
-  // AI Report Modal State
-  const [reportModal, setReportModal] = useState<{ isOpen: boolean, title: string, content: string, loading: boolean }>({
-      isOpen: false, title: '', content: '', loading: false
-  });
+  const [dateFilter, setDateFilter] = useState<{ start: string; end: string }>({ start: '', end: '' });
+  const [searchTerm, setSearchTerm] = useState('');
 
   // ==========================================
-  // HELPERS
+  // 1. SIMPLE DATE HELPERS
   // ==========================================
   
-  const calculateTotalHours = (startStr: string, endStr?: string) => {
-      if (!startStr) return 0;
-      const start = new Date(startStr);
-      const end = endStr ? new Date(endStr) : new Date();
+  const simpleDate = (dateStr: string | undefined): Date | null => {
+      if (!dateStr) return null;
+      const clean = dateStr.includes('T') ? dateStr.split('T')[0] : dateStr;
+      const parts = clean.split(/[-/]/);
+      if (parts.length < 3) return null;
+      const y = parseInt(parts[0], 10);
+      const m = parseInt(parts[1], 10) - 1; 
+      const d = parseInt(parts[2], 10);
+      return new Date(y, m, d);
+  };
+
+  const displayDate = (dateStr: string | undefined) => {
+      const d = simpleDate(dateStr);
+      if (!d) return '-';
+      return d.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  };
+
+  const calculateHoursSimple = (startStr: string, endStr?: string) => {
+      const start = simpleDate(startStr);
+      // STRICT LOGIC: If endStr exists (Scheduled End), use it. Defaults to Today only if open.
+      const end = endStr ? simpleDate(endStr) : new Date(); 
+
+      if (!start || !end) return 0;
       
-      const diffTime = Math.abs(end.getTime() - start.getTime());
-      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) || 1; 
-      
-      return diffDays * 24; // Simple calculation: Days * 24
+      start.setHours(0,0,0,0);
+      end.setHours(0,0,0,0);
+
+      if (end < start) return 0; 
+
+      const diffMs = end.getTime() - start.getTime();
+      const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24));
+      return (diffDays + 1) * 24; 
   };
 
   const isOverdue = (dateStr: string | undefined) => {
-      if (!dateStr) return false;
-      const d = new Date(dateStr);
-      d.setHours(23, 59, 59, 999);
-      return new Date() > d;
+      const end = simpleDate(dateStr);
+      if (!end) return false;
+      const now = new Date();
+      now.setHours(0,0,0,0);
+      return now > end;
   };
+
+  // ==========================================
+  // 2. DATA FILTERING
+  // ==========================================
+
+  const filteredHistory = useMemo(() => {
+      if (!dateFilter.start && !dateFilter.end) return history;
+
+      const filterStart = simpleDate(dateFilter.start)?.getTime() || 0;
+      const filterEnd = simpleDate(dateFilter.end)?.getTime() || Infinity;
+
+      return history.filter(session => {
+          const sDate = simpleDate(session.startDate)?.getTime() || 0;
+          return sDate >= filterStart && sDate <= filterEnd;
+      });
+  }, [history, dateFilter]);
+
+  // ==========================================
+  // 3. MASTER DATASET GENERATION
+  // ==========================================
+
+  const masterEquipmentData = useMemo(() => {
+      // Map structure: count, hours, lastUser, lastDateTimestamp, lastStartDateStr, lastEndDateStr
+      const usageMap = new Map<string, { count: number, hours: number, lastUser: string, lastDate: number, lastStart: string, lastEnd: string }>();
+
+      const processSession = (s: Session) => {
+          const hrs = calculateHoursSimple(s.startDate, s.endDate);
+          const sTime = simpleDate(s.startDate)?.getTime() || 0;
+          const userName = users.find(u => u.id === s.userId)?.name || s.userId;
+
+          s.items.forEach(itemId => {
+              const current = usageMap.get(itemId) || { count: 0, hours: 0, lastUser: '', lastDate: 0, lastStart: '', lastEnd: '' };
+              
+              const isNewer = sTime > current.lastDate;
+
+              usageMap.set(itemId, {
+                  count: current.count + 1,
+                  hours: current.hours + hrs,
+                  lastDate: Math.max(current.lastDate, sTime),
+                  // Update "Last" fields only if this session is newer than what we have stored
+                  lastUser: isNewer ? userName : current.lastUser,
+                  lastStart: isNewer ? s.startDate : current.lastStart,
+                  lastEnd: isNewer ? (s.endDate || '') : current.lastEnd
+              });
+          });
+      };
+
+      // Process History
+      filteredHistory.forEach(processSession);
+
+      // Process Active Sessions (Usually newer, so they will overwrite 'last' fields naturally)
+      sessions.filter(s => s.status === 'Activa').forEach(processSession);
+
+      return equipment.map(eq => {
+          const stats = usageMap.get(eq.id) || { count: 0, hours: 0, lastUser: '-', lastDate: 0, lastStart: '', lastEnd: '' };
+          return { ...eq, stats };
+      }).sort((a, b) => b.stats.hours - a.stats.hours);
+
+  }, [equipment, filteredHistory, sessions, users]);
+
+  const filteredMasterData = useMemo(() => {
+      if(!searchTerm) return masterEquipmentData;
+      const q = searchTerm.toLowerCase();
+      return masterEquipmentData.filter(e => 
+          e.name.toLowerCase().includes(q) || 
+          e.category.toLowerCase().includes(q) ||
+          e.id.toLowerCase().includes(q)
+      );
+  }, [masterEquipmentData, searchTerm]);
+
+  // ==========================================
+  // 4. EXPORT FUNCTIONS
+  // ==========================================
 
   const downloadCSV = (data: any[], filename: string) => {
     if (!data.length) return;
     const headers = Object.keys(data[0]);
     const csvContent = '\uFEFF' + [headers.join(','), ...data.map(row => headers.map(fieldName => {
-        let val = row[fieldName] || '';
-        if (typeof val === 'string') {
-            val = `"${val.replace(/"/g, '""')}"`;
-        }
-        return val;
+        let val = row[fieldName];
+        if (val === undefined || val === null) val = '';
+        val = String(val).replace(/"/g, '""');
+        return `"${val}"`;
     }).join(','))].join('\n');
 
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -56,53 +149,26 @@ export const AdminStatsView: React.FC = () => {
     document.body.removeChild(link);
   };
 
-  const handleExportAndReport = async (type: 'CURRENT' | 'HISTORY') => {
-      setReportModal({ isOpen: true, title: `Generando Reporte (${type === 'CURRENT' ? 'Actual' : 'Histórico'})...`, content: '', loading: true });
-      
-      const sourceData = type === 'CURRENT' ? sessions.filter(s => s.status === 'Activa') : history;
-
-      const richData = sourceData.map(s => {
-          const user = users.find(u => u.id === s.userId);
-          const durationHours = calculateTotalHours(s.startDate, s.endDate);
-
-          const itemNames = s.items.map(id => {
-              const eq = equipment.find(e => e.id === id);
-              return eq ? `${eq.name} (${eq.category})` : id;
-          }).join('; ');
-
-          return {
-              ID_Sesion: s.id,
-              Proyecto: s.projectName,
-              Tipo_Sesion: s.type,
-              Usuario_Nombre: user?.name || s.userId,
-              Usuario_Rol: user?.role || 'Desconocido',
-              Usuario_Area: user?.area || '-',
-              Fecha_Inicio: s.startDate ? new Date(s.startDate).toLocaleDateString() : '',
-              Fecha_Fin: s.endDate ? new Date(s.endDate).toLocaleDateString() : (type === 'CURRENT' ? 'En curso' : ''),
-              Horas_Totales: durationHours,
-              Cantidad_Items: s.items.length,
-              Lista_Equipos: itemNames,
-              Observaciones: s.observations || ''
-          };
-      });
-
-      downloadCSV(richData, `crtic_reporte_${type.toLowerCase()}_${new Date().toISOString().split('T')[0]}.csv`);
-
-      const aiPayload = richData.map(({ ID_Sesion, Lista_Equipos, ...rest }) => rest);
-
-      const reportText = await generateUsageReport(aiPayload, type);
-      setReportModal({ 
-          isOpen: true, 
-          title: `Reporte Inteligente: ${type === 'CURRENT' ? 'Estado Actual' : 'Análisis Histórico'}`, 
-          content: reportText, 
-          loading: false 
-      });
+  const handleExportMaster = () => {
+      const cleanData = masterEquipmentData.map(e => ({
+          ID_Equipo: e.id.split('_DUPE_')[0], 
+          Nombre: e.name,
+          Categoria: e.category,
+          Estado_Actual: e.status,
+          Veces_Prestado: e.stats.count,
+          Horas_Totales_Uso: e.stats.hours,
+          Ultimo_Usuario: e.stats.lastUser,
+          Ref_Ultimo_Inicio: displayDate(e.stats.lastStart), // Added
+          Ref_Ultimo_Fin: displayDate(e.stats.lastEnd), // Added
+          Fecha_Reporte: new Date().toLocaleDateString('es-ES')
+      }));
+      downloadCSV(cleanData, `CRTIC_Dataset_Maestro_Equipos_${new Date().toISOString().split('T')[0]}.csv`);
   };
 
   // ==========================================
-  // CURRENT METRICS (LIVE) CALCS
+  // 5. VIEW HELPERS
   // ==========================================
-  
+
   const categoryUsage = useMemo(() => {
     const data: Record<string, { total: number, inUse: number }> = {};
     equipment.forEach(e => {
@@ -113,7 +179,7 @@ export const AdminStatsView: React.FC = () => {
             data[cat].inUse++;
         }
     });
-    return Object.entries(data).sort((a, b) => (b[1].inUse / b[1].total) - (a[1].inUse / a[1].total)); // Sort by % used
+    return Object.entries(data).sort((a, b) => (b[1].inUse / b[1].total) - (a[1].inUse / a[1].total)); 
   }, [equipment]);
 
   const utilizationRate = useMemo(() => {
@@ -122,137 +188,70 @@ export const AdminStatsView: React.FC = () => {
       return total > 0 ? Math.round((inUse / total) * 100) : 0;
   }, [equipment]);
 
-  // Active Loans List Data
   const activeLoans = useMemo(() => {
-      // Use Set to prevent duplicates if data is dirty
       const uniqueSessionIds = new Set(sessions.filter(s => s.status === 'Activa').map(s => s.id));
-      
       return sessions
         .filter(s => uniqueSessionIds.has(s.id) && s.status === 'Activa')
         .map(s => {
             const user = users.find(u => u.id === s.userId);
-            // Deduplicate items just in case
             const uniqueItems = Array.from(new Set(s.items));
             return {
                 ...s,
                 items: uniqueItems,
                 userName: user ? user.name : 'Usuario Desconocido',
                 userRole: user ? user.role : 'Externo',
-                itemsList: uniqueItems.map(id => equipment.find(e => e.id === id)).filter(e => !!e)
+                itemsList: uniqueItems.map(id => equipment.find(e => e.id === id)).filter((e): e is Equipment => !!e)
             };
         })
         .sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime());
   }, [sessions, users, equipment]);
 
-  // Overdue Loans
-  const overdueLoans = useMemo(() => {
-      return activeLoans.filter(loan => isOverdue(loan.endDate));
-  }, [activeLoans]);
-
-  // Critical Category Data
+  const overdueLoans = useMemo(() => activeLoans.filter(loan => isOverdue(loan.endDate)), [activeLoans]);
   const criticalCat = categoryUsage.length > 0 ? categoryUsage[0] : null;
-  const criticalCatPercent = criticalCat ? Math.round((criticalCat[1].inUse / criticalCat[1].total) * 100) : 0;
+  const criticalCatPercent = criticalCat && criticalCat[1].total > 0 ? Math.round((criticalCat[1].inUse / criticalCat[1].total) * 100) : 0;
   
-  // Color Logic for Critical Category
   let criticalColor = 'bg-emerald-600';
-  let criticalText = 'text-emerald-200';
-  let statusText = 'Normal';
-  
-  if (criticalCatPercent > 75) {
-      criticalColor = 'bg-red-600';
-      criticalText = 'text-red-200';
-      statusText = 'CRÍTICO';
-  } else if (criticalCatPercent > 40) {
-      criticalColor = 'bg-yellow-500';
-      criticalText = 'text-yellow-900';
-      statusText = 'ALERTA';
-  }
-
-  // ==========================================
-  // HISTORICAL METRICS (ROBUST) CALCS
-  // ==========================================
+  if (criticalCatPercent > 75) criticalColor = 'bg-red-600';
+  else if (criticalCatPercent > 40) criticalColor = 'bg-yellow-500';
 
   const userStats = useMemo(() => {
-      const stats: Record<string, { sessions: number, hours: number }> = {};
-      
-      history.forEach(s => {
-          if (!s.userId) return;
-          if (!stats[s.userId]) stats[s.userId] = { sessions: 0, hours: 0 };
-          
-          stats[s.userId].sessions++;
-          const hrs = calculateTotalHours(s.startDate, s.endDate);
-          if (hrs > 0) stats[s.userId].hours += hrs;
+      const stats = new Map<string, number>();
+      filteredHistory.forEach(s => {
+          const h = calculateHoursSimple(s.startDate, s.endDate);
+          stats.set(s.userId, (stats.get(s.userId) || 0) + h);
       });
-
-      return Object.entries(stats)
-          .map(([id, data]) => ({
-              user: users.find(u => u.id === id),
-              ...data
-          }))
-          .sort((a, b) => b.hours - a.hours) 
-          .slice(0, 8);
-  }, [history, users]);
-
-  const equipmentStats = useMemo(() => {
-      const eqStats: Record<string, number> = {};
-      
-      history.forEach(s => {
-          const hrs = calculateTotalHours(s.startDate, s.endDate);
-          if (hrs > 0) {
-            // Dedupe items for stats too
-            const uniqueItems = new Set(s.items);
-            uniqueItems.forEach(itemId => {
-                eqStats[itemId] = (eqStats[itemId] || 0) + hrs;
-            });
-          }
-      });
-
-      return Object.entries(eqStats)
-          .map(([id, hours]) => ({
-              item: equipment.find(e => e.id === id),
-              hours: hours
-          }))
-          .filter(x => x.item)
-          .sort((a, b) => b.hours - a.hours)
-          .slice(0, 8);
-  }, [history, equipment]);
+      return Array.from(stats.entries())
+        .map(([id, hours]) => ({ id, user: users.find(u => u.id === id), hours }))
+        .sort((a,b) => b.hours - a.hours)
+        .slice(0, 50);
+  }, [filteredHistory, users]);
 
   const monthlyStats = useMemo(() => {
-      const months: Record<string, number> = {};
-      history.forEach(s => {
-          if(!s.startDate) return;
-          const d = new Date(s.startDate);
-          if (isNaN(d.getTime())) return;
-          const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-          months[key] = (months[key] || 0) + 1;
+      const stats = new Map<string, number>();
+      const sorted = [...filteredHistory].sort((a, b) => {
+          const da = simpleDate(a.startDate)?.getTime() || 0;
+          const db = simpleDate(b.startDate)?.getTime() || 0;
+          return da - db;
       });
-
-      return Object.entries(months)
-          .sort((a, b) => a[0].localeCompare(b[0])) 
-          .map(([key, count]) => {
-              const [y, m] = key.split('-');
-              const dateObj = new Date(parseInt(y), parseInt(m)-1);
-              return {
-                  label: dateObj.toLocaleDateString('es-ES', { month: 'short', year: '2-digit' }),
-                  count
-              };
-          });
-  }, [history]);
-
-  const totalHistoryHours = useMemo(() => {
-     return userStats.reduce((acc, curr) => acc + curr.hours, 0);
-  }, [userStats]);
+      sorted.forEach(s => {
+          const d = simpleDate(s.startDate);
+          if (!d) return;
+          const k = d.toLocaleDateString('es-ES', { month: 'short' });
+          stats.set(k, (stats.get(k) || 0) + 1);
+      });
+      return Array.from(stats.entries()).map(([label, count]) => ({ label, count }));
+  }, [filteredHistory]);
 
   return (
-    <div className="space-y-12 animate-in fade-in slide-in-from-bottom-4 pb-20">
+    <div className="space-y-16 animate-in fade-in slide-in-from-bottom-4 pb-20">
       
       {/* HEADER */}
       <div>
             <h2 className="text-3xl font-bold text-white flex items-center gap-3">
                 <BarChartIcon className="w-8 h-8 text-indigo-400" />
-                Métricas
+                Métricas y Reportes
             </h2>
-            <p className="text-neutral-400 mt-2">Panel unificado de control actual e histórico (Horas Totales).</p>
+            <p className="text-neutral-400 mt-2">Sistema integral de análisis de datos e inventario.</p>
       </div>
         
       {/* ======================= SECTION 1: LIVE MONITOR ======================= */}
@@ -262,13 +261,6 @@ export const AdminStatsView: React.FC = () => {
                 <div className="w-2 h-2 bg-sky-500 rounded-full animate-pulse"></div>
                 Monitor en Vivo
              </h3>
-             <button 
-                onClick={() => handleExportAndReport('CURRENT')}
-                className="flex items-center gap-2 bg-sky-900/30 text-sky-400 border border-sky-500/30 hover:bg-sky-900/50 px-4 py-2 rounded-lg text-sm font-bold transition-all"
-             >
-                <SparklesIcon className="w-4 h-4" />
-                Reporte IA + CSV
-             </button>
         </div>
 
         {/* OVERDUE PANEL */}
@@ -281,28 +273,25 @@ export const AdminStatsView: React.FC = () => {
                 <div className="overflow-x-auto">
                     <table className="w-full text-left text-sm">
                         <thead className="text-red-300/50 uppercase text-xs">
-                            <tr><th>Usuario</th><th>Proyecto</th><th>Fecha Fin</th><th>Días de Retraso</th></tr>
+                            <tr><th>Usuario</th><th>Proyecto</th><th>Fecha Fin</th><th>Estado</th></tr>
                         </thead>
                         <tbody className="text-red-200">
-                            {overdueLoans.map(loan => {
-                                const daysOver = Math.ceil((new Date().getTime() - new Date(loan.endDate!).getTime()) / (1000 * 3600 * 24));
-                                return (
+                            {overdueLoans.map(loan => (
                                 <tr key={loan.id} className="border-b border-red-900/30 last:border-0">
                                     <td className="py-2 font-bold">{loan.userName}</td>
                                     <td className="py-2">{loan.projectName}</td>
-                                    <td className="py-2">{new Date(loan.endDate!).toLocaleDateString()}</td>
-                                    <td className="py-2 font-bold">+{daysOver} días</td>
+                                    <td className="py-2">{displayDate(loan.endDate)}</td>
+                                    <td className="py-2 font-bold bg-red-900/40 px-2 rounded text-center inline-block mt-1">Vencido</td>
                                 </tr>
-                            )})}
+                            ))}
                         </tbody>
                     </table>
                 </div>
             </div>
         )}
 
+        {/* KPI CARDS */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            
-            {/* KPI 1: Utilización */}
             <div className="bg-neutral-900 p-6 rounded-xl border border-neutral-800 flex flex-col justify-between">
                 <h3 className="text-xs font-bold text-neutral-500 uppercase tracking-wider mb-2">Utilización Total</h3>
                 <div className="flex items-end gap-2">
@@ -314,7 +303,6 @@ export const AdminStatsView: React.FC = () => {
                 </div>
             </div>
 
-            {/* KPI 2: Active */}
             <div className="bg-neutral-900 p-6 rounded-xl border border-neutral-800 flex flex-col justify-between">
                 <h3 className="text-xs font-bold text-neutral-500 uppercase tracking-wider mb-2">Reservas Activas</h3>
                 <div className="flex items-end gap-2">
@@ -323,22 +311,16 @@ export const AdminStatsView: React.FC = () => {
                 </div>
             </div>
 
-            {/* KPI 3: CRITICAL CATEGORY (VISUAL) */}
             <div className={`md:col-span-2 rounded-xl border border-neutral-800 p-6 relative overflow-hidden flex flex-col justify-between ${criticalColor}`}>
                  <div className="absolute right-0 top-0 w-32 h-32 bg-white/10 rounded-full blur-3xl pointer-events-none transform translate-x-10 -translate-y-10"></div>
-                 
-                 {criticalCat ? (
+                 {criticalCat && (
                      <>
                         <div className="flex justify-between items-start relative z-10">
                             <div>
-                                <h3 className={`text-xs font-bold uppercase tracking-wider mb-1 opacity-80 ${criticalText}`}>Categoría Más Solicitada</h3>
+                                <h3 className="text-xs font-bold uppercase tracking-wider mb-1 opacity-80 text-white">Categoría Más Solicitada</h3>
                                 <p className="text-3xl font-bold text-white">{criticalCat[0]}</p>
                             </div>
-                            <div className="bg-white/20 px-3 py-1 rounded text-xs font-bold text-white backdrop-blur-sm">
-                                {statusText}
-                            </div>
                         </div>
-                        
                         <div className="relative z-10 mt-4">
                             <div className="flex justify-between text-sm text-white/80 mb-1">
                                 <span>{criticalCat[1].inUse} de {criticalCat[1].total} ocupados</span>
@@ -349,15 +331,13 @@ export const AdminStatsView: React.FC = () => {
                             </div>
                         </div>
                      </>
-                 ) : (
-                     <div className="flex items-center justify-center h-full text-white/50">Recopilando datos...</div>
                  )}
             </div>
         </div>
 
         {/* DETAILED ACTIVE LOANS TABLE */}
         <div className="bg-neutral-900 p-6 rounded-xl border border-neutral-800 shadow-lg">
-            <h3 className="font-bold text-white mb-6">Detalle de Préstamos Activos (Quién tiene Qué)</h3>
+            <h3 className="font-bold text-white mb-6">Detalle de Préstamos Activos</h3>
             {activeLoans.length === 0 ? (
                 <div className="p-8 text-center text-neutral-500 italic">No hay préstamos activos en este momento.</div>
             ) : (
@@ -365,10 +345,10 @@ export const AdminStatsView: React.FC = () => {
                     <table className="w-full text-left text-sm">
                         <thead className="bg-neutral-950 text-neutral-500 text-xs uppercase border-b border-neutral-800">
                             <tr>
-                                <th className="p-4">Usuario / Responsable</th>
+                                <th className="p-4">Usuario</th>
                                 <th className="p-4">Proyecto</th>
                                 <th className="p-4">Inicio</th>
-                                <th className="p-4 w-[40%]">Equipos en Poder</th>
+                                <th className="p-4 w-[40%]">Equipos</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-neutral-800">
@@ -383,20 +363,15 @@ export const AdminStatsView: React.FC = () => {
                                         <div className="text-xs text-neutral-500 mt-1">{loan.type}</div>
                                     </td>
                                     <td className="p-4 align-top text-neutral-400 font-mono text-xs">
-                                        {new Date(loan.startDate).toLocaleDateString()}
+                                        {displayDate(loan.startDate)}
                                     </td>
                                     <td className="p-4 align-top">
                                         <div className="flex flex-wrap gap-1">
-                                            {loan.itemsList.map((item: any) => (
+                                            {loan.itemsList.map((item) => (
                                                 <span key={item.id} className="inline-flex items-center px-2 py-1 rounded bg-neutral-800 border border-neutral-700 text-neutral-300 text-xs">
                                                     {item.name}
                                                 </span>
                                             ))}
-                                            {loan.items.length > loan.itemsList.length && (
-                                                <span className="inline-flex items-center px-2 py-1 rounded bg-neutral-800 border border-neutral-700 text-neutral-500 text-xs">
-                                                    + {loan.items.length - loan.itemsList.length} desconocidos
-                                                </span>
-                                            )}
                                         </div>
                                     </td>
                                 </tr>
@@ -408,186 +383,209 @@ export const AdminStatsView: React.FC = () => {
         </div>
       </section>
 
-      {/* ======================= SECTION 2: ROBUST HISTORY ======================= */}
-      <section className="space-y-6 pt-6">
-        <div className="flex justify-between items-center border-b border-neutral-800 pb-4">
-             <h3 className="text-xl font-bold text-indigo-400 flex items-center gap-2">
-                <DatabaseIcon className="w-5 h-5" />
-                Histórico de Uso (Analítica)
-             </h3>
-             <button 
-                onClick={() => handleExportAndReport('HISTORY')}
-                className="flex items-center gap-2 bg-indigo-900/30 text-indigo-400 border border-indigo-500/30 hover:bg-indigo-900/50 px-4 py-2 rounded-lg text-sm font-bold transition-all"
-             >
-                <SparklesIcon className="w-4 h-4" />
-                Reporte IA + CSV
-             </button>
+      {/* ======================= SECTION 2: NEW MASTER DASHBOARD ======================= */}
+      <section className="space-y-6 pt-6 border-t border-neutral-800">
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+              <div>
+                  <h3 className="text-xl font-bold text-emerald-400 flex items-center gap-2">
+                      <ClipboardIcon className="w-5 h-5" />
+                      Dashboard Maestro de Equipos
+                  </h3>
+                  <p className="text-xs text-neutral-500 mt-1">
+                      Vista consolidada de todos los activos, independientemente de si han sido usados o no.
+                      { (dateFilter.start || dateFilter.end) && <span className="text-emerald-500 ml-1 font-bold">(Filtrado por fecha)</span> }
+                  </p>
+              </div>
+              
+              <div className="flex gap-2 w-full md:w-auto">
+                 <div className="relative flex-1 md:flex-initial">
+                     <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-500" />
+                     <input 
+                        type="text" 
+                        placeholder="Filtrar tabla..." 
+                        className="bg-neutral-900 border border-neutral-800 rounded-lg pl-9 pr-3 py-2 text-sm text-white w-full outline-none focus:border-emerald-500"
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                     />
+                 </div>
+                 <button 
+                    onClick={handleExportMaster}
+                    className="flex items-center gap-2 bg-emerald-900/30 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-900/50 px-4 py-2 rounded-lg text-sm font-bold transition-all whitespace-nowrap"
+                 >
+                    <DatabaseIcon className="w-4 h-4" />
+                    Dataset Maestro (CSV)
+                 </button>
+              </div>
+          </div>
+
+          <div className="bg-neutral-900 rounded-xl border border-neutral-800 shadow-lg overflow-hidden flex flex-col max-h-[500px]">
+              <div className="overflow-auto custom-scrollbar">
+                  <table className="w-full text-left text-sm relative">
+                      <thead className="bg-neutral-950 text-neutral-500 text-xs uppercase sticky top-0 z-10 shadow-sm">
+                          <tr>
+                              <th className="p-3 bg-neutral-950">ID Activo</th>
+                              <th className="p-3 bg-neutral-950">Equipo</th>
+                              <th className="p-3 bg-neutral-950">Categoría</th>
+                              <th className="p-3 bg-neutral-950 text-center">Estado Actual</th>
+                              <th className="p-3 bg-neutral-950 text-right">Cant. Préstamos</th>
+                              <th className="p-3 bg-neutral-950 text-right">Horas Uso</th>
+                              <th className="p-3 bg-neutral-950">Último Usuario</th>
+                          </tr>
+                      </thead>
+                      <tbody className="divide-y divide-neutral-800">
+                          {filteredMasterData.map(eq => (
+                              <tr key={eq.id} className="hover:bg-neutral-800/50 transition-colors group">
+                                  <td className="p-3 font-mono text-xs text-neutral-500">{eq.id.split('_DUPE_')[0]}</td>
+                                  <td className="p-3 font-medium text-white group-hover:text-emerald-300 transition-colors">{eq.name}</td>
+                                  <td className="p-3 text-neutral-400">{eq.category}</td>
+                                  <td className="p-3 text-center">
+                                      <span className={`text-[10px] px-2 py-0.5 rounded border ${
+                                          eq.status === EquipmentStatus.AVAILABLE ? 'bg-neutral-800 border-neutral-700 text-neutral-400' :
+                                          eq.status === EquipmentStatus.IN_USE ? 'bg-yellow-900/20 border-yellow-700/50 text-yellow-500' :
+                                          eq.status === EquipmentStatus.ASSIGNED_INTERNAL ? 'bg-cyan-900/20 border-cyan-700/50 text-cyan-400' :
+                                          'bg-red-900/20 border-red-700/50 text-red-500'
+                                      }`}>
+                                          {eq.status}
+                                      </span>
+                                  </td>
+                                  <td className="p-3 text-right font-mono text-neutral-300">{eq.stats.count}</td>
+                                  <td className="p-3 text-right font-mono font-bold text-emerald-400">{eq.stats.hours}h</td>
+                                  <td className="p-3 text-neutral-400 truncate max-w-[150px]" title={eq.stats.lastUser}>{eq.stats.lastUser}</td>
+                              </tr>
+                          ))}
+                          {filteredMasterData.length === 0 && (
+                              <tr><td colSpan={7} className="p-8 text-center text-neutral-500 italic">No se encontraron equipos</td></tr>
+                          )}
+                      </tbody>
+                  </table>
+              </div>
+          </div>
+      </section>
+
+      {/* ======================= SECTION 3: ROBUST HISTORY ======================= */}
+      <section className="space-y-6 pt-6 border-t border-neutral-800">
+        <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center pb-4 gap-4">
+             <div className="flex flex-col">
+                 <h3 className="text-xl font-bold text-indigo-400 flex items-center gap-2">
+                    <DatabaseIcon className="w-5 h-5" />
+                    Histórico Filtrable
+                 </h3>
+                 <p className="text-xs text-neutral-500 mt-1">Exploración de sesiones pasadas.</p>
+             </div>
+
+             {/* DATE FILTERS */}
+             <div className="flex flex-wrap items-center gap-3 bg-neutral-900 p-2 rounded-xl border border-neutral-800">
+                <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-neutral-500 px-1">Desde:</span>
+                    <input 
+                        type="date" 
+                        className="bg-neutral-950 border border-neutral-700 rounded-lg px-2 py-1.5 text-xs text-white focus:border-indigo-500 outline-none"
+                        value={dateFilter.start}
+                        onChange={(e) => setDateFilter({...dateFilter, start: e.target.value})}
+                    />
+                </div>
+                <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-neutral-500 px-1">Hasta:</span>
+                    <input 
+                        type="date" 
+                        className="bg-neutral-950 border border-neutral-700 rounded-lg px-2 py-1.5 text-xs text-white focus:border-indigo-500 outline-none"
+                        value={dateFilter.end}
+                        onChange={(e) => setDateFilter({...dateFilter, end: e.target.value})}
+                    />
+                </div>
+                {(dateFilter.start || dateFilter.end) && (
+                    <button 
+                        onClick={() => setDateFilter({ start: '', end: '' })}
+                        className="p-1.5 text-neutral-400 hover:text-white bg-neutral-800 hover:bg-neutral-700 rounded-lg transition-colors"
+                        title="Limpiar Filtros"
+                    >
+                        <XIcon className="w-4 h-4" />
+                    </button>
+                )}
+             </div>
         </div>
 
-        {history.length === 0 ? (
+        {filteredHistory.length === 0 ? (
             <div className="p-12 text-center bg-neutral-900 rounded-xl border border-neutral-800">
                 <DatabaseIcon className="w-12 h-12 text-neutral-600 mx-auto mb-4" />
                 <h3 className="text-xl font-bold text-white">Sin historial disponible</h3>
-                <p className="text-neutral-500 mt-2">Cierra reservas para generar datos o sincroniza con la nube.</p>
+                <p className="text-neutral-500 mt-2">No se encontraron registros para el rango de fechas seleccionado.</p>
             </div>
         ) : (
-            <>
-                {/* 1. HISTORY KPIS */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                     <div className="bg-neutral-900 p-5 rounded-xl border border-neutral-800 flex flex-col justify-between">
-                        <span className="text-xs font-bold text-neutral-500 uppercase">Reservas Totales</span>
-                        <span className="text-2xl font-bold text-white">{history.length}</span>
-                     </div>
-                     <div className="bg-neutral-900 p-5 rounded-xl border border-neutral-800 flex flex-col justify-between">
-                        <span className="text-xs font-bold text-neutral-500 uppercase">Horas Totales</span>
-                        <span className="text-2xl font-bold text-indigo-400">{totalHistoryHours}h</span>
-                     </div>
-                     <div className="bg-neutral-900 p-5 rounded-xl border border-neutral-800 flex flex-col justify-between">
-                        <span className="text-xs font-bold text-neutral-500 uppercase">Promedio Duración</span>
-                        <span className="text-2xl font-bold text-emerald-400">
-                             {history.length > 0 ? Math.round((totalHistoryHours / history.length) * 10) / 10 : 0}h
-                        </span>
-                     </div>
-                </div>
-
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                    
-                    {/* 2. TOP USERS TABLE */}
-                    <div className="bg-neutral-900 p-6 rounded-xl border border-neutral-800 shadow-lg flex flex-col h-full">
-                        <h3 className="font-bold text-white mb-4 flex items-center gap-2">
-                             <span className="bg-indigo-500 w-1 h-5 rounded-full"></span>
-                             Usuarios Más Activos
-                        </h3>
-                        <div className="overflow-x-auto flex-1">
-                            <table className="w-full text-left text-sm">
-                                <thead className="bg-neutral-950 text-neutral-500 text-xs uppercase">
-                                    <tr>
-                                        <th className="p-3 rounded-l-lg">Usuario</th>
-                                        <th className="p-3 text-right">Reservas</th>
-                                        <th className="p-3 text-right rounded-r-lg">Horas Uso</th>
+             <div className="space-y-6">
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                     <div className="bg-neutral-900 p-6 rounded-xl border border-neutral-800 shadow-lg h-80 overflow-auto">
+                        <h4 className="font-bold text-white mb-4 sticky top-0 bg-neutral-900 pb-2">Top Usuarios</h4>
+                        <table className="w-full text-sm text-left">
+                            <thead className="text-xs uppercase text-neutral-500 border-b border-neutral-800"><tr><th className="pb-2">Usuario</th><th className="pb-2 text-right">Horas</th></tr></thead>
+                            <tbody className="text-neutral-300 divide-y divide-neutral-800">
+                                {userStats.map(u => (
+                                    <tr key={u.id}>
+                                        <td className="py-2">{u.user?.name || u.id}</td>
+                                        <td className="py-2 text-right font-mono text-indigo-400">{u.hours}h</td>
                                     </tr>
-                                </thead>
-                                <tbody className="divide-y divide-neutral-800">
-                                    {userStats.map((stat, idx) => (
-                                        <tr key={idx} className="hover:bg-neutral-800/50 transition-colors">
-                                            <td className="p-3 font-medium text-neutral-200">
-                                                <div className="flex items-center gap-2">
-                                                    <span className="w-5 h-5 rounded-full bg-neutral-800 text-[10px] flex items-center justify-center text-neutral-500 border border-neutral-700">
-                                                        {idx + 1}
-                                                    </span>
-                                                    {stat.user?.name || 'Desconocido'}
-                                                </div>
-                                            </td>
-                                            <td className="p-3 text-right text-neutral-400">{stat.sessions}</td>
-                                            <td className="p-3 text-right font-bold text-indigo-400">{stat.hours}h</td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
+                                ))}
+                            </tbody>
+                        </table>
+                     </div>
+                     <div className="bg-neutral-900 p-6 rounded-xl border border-neutral-800 shadow-lg h-80 overflow-auto">
+                        <h4 className="font-bold text-white mb-4 sticky top-0 bg-neutral-900 pb-2">Uso Mensual</h4>
+                        <div className="space-y-3">
+                             {monthlyStats.map((m, i) => (
+                                 <div key={i} className="flex items-center gap-3">
+                                     <span className="text-xs font-bold text-neutral-500 w-16">{m.label}</span>
+                                     <div className="flex-1 bg-neutral-800 rounded-full h-2 overflow-hidden">
+                                         <div className="bg-indigo-500 h-full" style={{ width: `${Math.min((m.count/20)*100, 100)}%` }}></div>
+                                     </div>
+                                     <span className="text-xs text-white font-mono">{m.count}</span>
+                                 </div>
+                             ))}
                         </div>
-                    </div>
+                     </div>
+                 </div>
 
-                    {/* 3. TOP EQUIPMENT TABLE */}
-                    <div className="bg-neutral-900 p-6 rounded-xl border border-neutral-800 shadow-lg flex flex-col h-full">
-                         <h3 className="font-bold text-white mb-4 flex items-center gap-2">
-                             <span className="bg-emerald-500 w-1 h-5 rounded-full"></span>
-                             Equipos Más Usados (Horas)
-                        </h3>
-                        <div className="overflow-x-auto flex-1">
-                            <table className="w-full text-left text-sm">
-                                <thead className="bg-neutral-950 text-neutral-500 text-xs uppercase">
-                                    <tr>
-                                        <th className="p-3 rounded-l-lg">Equipo</th>
-                                        <th className="p-3 rounded-r-lg text-right">Uso Total</th>
+                 {/* NEW DETAILED HISTORY TABLE */}
+                 <div className="bg-neutral-900 p-6 rounded-xl border border-neutral-800 shadow-lg max-h-96 overflow-auto">
+                    <h4 className="font-bold text-white mb-4 sticky top-0 bg-neutral-900 pb-2">Registro Histórico Detallado</h4>
+                    <table className="w-full text-sm text-left text-neutral-300">
+                        <thead className="text-xs uppercase text-neutral-500 border-b border-neutral-800 bg-neutral-900">
+                            <tr>
+                                <th className="pb-3">Proyecto / Usuario</th>
+                                <th className="pb-3">Fechas (Inicio - Fin Programado)</th>
+                                <th className="pb-3 text-right">Horas Calc.</th>
+                                <th className="pb-3 text-right">Cant. Equipos</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-neutral-800">
+                            {filteredHistory.map((h, i) => {
+                                const userName = users.find(u => u.id === h.userId)?.name || h.userId;
+                                const calculatedHours = calculateHoursSimple(h.startDate, h.endDate);
+                                return (
+                                    <tr key={h.id + i} className="hover:bg-neutral-800/30">
+                                        <td className="py-3">
+                                            <div className="font-bold text-white">{h.projectName}</div>
+                                            <div className="text-xs text-neutral-500">{userName}</div>
+                                        </td>
+                                        <td className="py-3 font-mono text-xs">
+                                            <span className="text-emerald-400">{displayDate(h.startDate)}</span>
+                                            <span className="mx-2 text-neutral-600">→</span>
+                                            <span className="text-indigo-400">{displayDate(h.endDate)}</span>
+                                        </td>
+                                        <td className="py-3 text-right font-mono font-bold text-white">
+                                            {calculatedHours}h
+                                        </td>
+                                        <td className="py-3 text-right text-xs text-neutral-500">
+                                            {h.items.length} items
+                                        </td>
                                     </tr>
-                                </thead>
-                                <tbody className="divide-y divide-neutral-800">
-                                    {equipmentStats.map((stat, idx) => (
-                                        <tr key={idx} className="hover:bg-neutral-800/50 transition-colors">
-                                            <td className="p-3 font-medium text-neutral-200 truncate max-w-[200px]">
-                                                 <div className="flex items-center gap-2">
-                                                    <span className="w-5 h-5 rounded-full bg-neutral-800 text-[10px] flex items-center justify-center text-neutral-500 border border-neutral-700">
-                                                        {idx + 1}
-                                                    </span>
-                                                    {stat.item?.name}
-                                                </div>
-                                            </td>
-                                            <td className="p-3 text-right font-bold text-emerald-400">{stat.hours}h</td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
-
-                {/* 4. MONTHLY CHART */}
-                <div className="bg-neutral-900 p-6 rounded-xl border border-neutral-800 shadow-lg">
-                    <h3 className="font-bold text-white mb-6 flex items-center gap-2">
-                        <CalendarIcon className="w-5 h-5 text-neutral-400" />
-                        Tendencia Mensual de Reservas
-                    </h3>
-                    <div className="h-64 flex items-end gap-2 overflow-x-auto pb-4 px-2">
-                        {monthlyStats.length === 0 ? (
-                            <div className="w-full h-full flex items-center justify-center text-neutral-600 italic">Datos insuficientes para gráfica</div>
-                        ) : (
-                            monthlyStats.map((month, idx) => (
-                                <div key={idx} className="flex flex-col items-center gap-2 group flex-1 min-w-[60px]">
-                                    <div className="w-full relative bg-neutral-800 rounded-t-lg overflow-hidden h-48 flex items-end hover:bg-neutral-700 transition-colors">
-                                         {/* Assuming max monthly sessions is around 50 for scaling visually, clamped at 100% */}
-                                         <div 
-                                            className="w-full bg-indigo-500/80 hover:bg-indigo-400 transition-all border-t border-indigo-300/30"
-                                            style={{ height: `${Math.min((month.count / 20) * 100, 100)}%`, minHeight: '4px' }}
-                                         ></div>
-                                    </div>
-                                    <span className="text-xs font-bold text-white bg-neutral-800 px-2 py-1 rounded border border-neutral-700">{month.count}</span>
-                                    <span className="text-[10px] uppercase font-bold text-neutral-500">{month.label}</span>
-                                </div>
-                            ))
-                        )}
-                    </div>
-                </div>
-            </>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                 </div>
+             </div>
         )}
       </section>
-
-      {/* AI REPORT MODAL */}
-      {reportModal.isOpen && (
-          <div className="fixed inset-0 bg-black/90 backdrop-blur-sm z-[100] flex items-center justify-center p-4 animate-in fade-in">
-              <div className="bg-neutral-900 rounded-2xl border border-neutral-800 shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col">
-                  <div className="p-6 border-b border-neutral-800 flex justify-between items-center">
-                      <h3 className="text-xl font-bold text-white flex items-center gap-2">
-                          <SparklesIcon className="w-5 h-5 text-indigo-400" />
-                          {reportModal.title}
-                      </h3>
-                      {!reportModal.loading && (
-                        <button onClick={() => setReportModal({ ...reportModal, isOpen: false })} className="text-neutral-500 hover:text-white">
-                            <XIcon className="w-6 h-6" />
-                        </button>
-                      )}
-                  </div>
-                  <div className="p-6 overflow-y-auto flex-1">
-                      {reportModal.loading ? (
-                          <div className="flex flex-col items-center justify-center py-12 space-y-4">
-                              <div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
-                              <p className="text-neutral-400 animate-pulse">Analizando datos con Gemini AI...</p>
-                          </div>
-                      ) : (
-                          <div className="prose prose-invert max-w-none">
-                              <div className="bg-neutral-950 p-6 rounded-xl border border-neutral-800 text-neutral-300 font-sans leading-relaxed whitespace-pre-line">
-                                  {reportModal.content}
-                              </div>
-                              <div className="mt-6 p-4 bg-green-900/20 border border-green-900/30 rounded-lg text-sm text-green-300 flex items-center gap-2">
-                                  <span className="font-bold text-lg">↓</span>
-                                  El archivo CSV detallado (con datos de personas y horas) se ha descargado automáticamente.
-                              </div>
-                          </div>
-                      )}
-                  </div>
-              </div>
-          </div>
-      )}
-
     </div>
   );
 };
