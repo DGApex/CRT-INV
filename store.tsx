@@ -379,10 +379,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         let mergedHistory: Session[] = [];
         if (data.logs) {
-            // MERGE STRATEGY: Cloud History is Truth.
-            const cloudLogIds = new Set(cloudHistory.map(h => h.id));
-            const missingLocalLogs = prev.history.filter(h => !cloudLogIds.has(h.id));
-            mergedHistory = [...cloudHistory, ...missingLocalLogs];
+            // MERGE STRATEGY UPDATE: Cloud History is ABSOLUTE Truth.
+            // Previously we merged local history to be safe, but this prevents deletion.
+            // If data.logs exists, we trust it completely.
+            mergedHistory = [...cloudHistory];
         } else {
             mergedHistory = prev.history; 
         }
