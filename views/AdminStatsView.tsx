@@ -129,12 +129,15 @@ export const AdminStatsView: React.FC = () => {
   // ==========================================
 
   const downloadCSV = (data: any[], filename: string) => {
-    if (!data.length) return;
+    if (!data.length) {
+        alert("No hay datos para exportar.");
+        return;
+    }
     const headers = Object.keys(data[0]);
     const csvContent = '\uFEFF' + [headers.join(','), ...data.map(row => headers.map(fieldName => {
         let val = row[fieldName];
         if (val === undefined || val === null) val = '';
-        val = String(val).replace(/"/g, '""');
+        val = String(val).replace(/"/g, '""'); // Escape double quotes
         return `"${val}"`;
     }).join(','))].join('\n');
 
@@ -158,11 +161,47 @@ export const AdminStatsView: React.FC = () => {
           Veces_Prestado: e.stats.count,
           Horas_Totales_Uso: e.stats.hours,
           Ultimo_Usuario: e.stats.lastUser,
-          Ref_Ultimo_Inicio: displayDate(e.stats.lastStart), // Added
-          Ref_Ultimo_Fin: displayDate(e.stats.lastEnd), // Added
+          Ref_Ultimo_Inicio: displayDate(e.stats.lastStart), 
+          Ref_Ultimo_Fin: displayDate(e.stats.lastEnd),
           Fecha_Reporte: new Date().toLocaleDateString('es-ES')
       }));
-      downloadCSV(cleanData, `CRTIC_Dataset_Maestro_Equipos_${new Date().toISOString().split('T')[0]}.csv`);
+      downloadCSV(cleanData, `CRTIC_Maestro_Equipos_${new Date().toISOString().split('T')[0]}.csv`);
+  };
+
+  const handleExportReservations = () => {
+      // 1. Combine Active Sessions + Closed History
+      // Sort: Newest first
+      const allSessions = [...sessions, ...history].sort((a, b) => {
+          const timeA = new Date(a.startDate).getTime() || 0;
+          const timeB = new Date(b.startDate).getTime() || 0;
+          return timeB - timeA;
+      });
+
+      const cleanData = allSessions.map(s => {
+          const user = users.find(u => u.id === s.userId);
+          
+          // Generate a readable string of equipment names
+          const itemNames = s.items.map(id => {
+              const eq = equipment.find(e => e.id === id);
+              return eq ? eq.name : id;
+          }).join('; ');
+
+          return {
+              ID_Reserva: s.id,
+              Proyecto: s.projectName,
+              Tipo_Sesion: s.type,
+              Usuario: user ? user.name : s.userId,
+              Rol_Usuario: user ? user.role : 'Desconocido',
+              Fecha_Inicio: displayDate(s.startDate),
+              Fecha_Fin: displayDate(s.endDate),
+              Estado: s.status, // Activa vs Cerrada
+              Cantidad_Equipos: s.items.length,
+              Lista_Equipos: itemNames,
+              Observaciones: s.observations || ''
+          };
+      });
+
+      downloadCSV(cleanData, `CRTIC_Reporte_Reservas_${new Date().toISOString().split('T')[0]}.csv`);
   };
 
   // ==========================================
@@ -397,7 +436,7 @@ export const AdminStatsView: React.FC = () => {
                   </p>
               </div>
               
-              <div className="flex gap-2 w-full md:w-auto">
+              <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
                  <div className="relative flex-1 md:flex-initial">
                      <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-500" />
                      <input 
@@ -408,13 +447,26 @@ export const AdminStatsView: React.FC = () => {
                         onChange={(e) => setSearchTerm(e.target.value)}
                      />
                  </div>
-                 <button 
-                    onClick={handleExportMaster}
-                    className="flex items-center gap-2 bg-emerald-900/30 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-900/50 px-4 py-2 rounded-lg text-sm font-bold transition-all whitespace-nowrap"
-                 >
-                    <DatabaseIcon className="w-4 h-4" />
-                    Dataset Maestro (CSV)
-                 </button>
+                 
+                 {/* BUTTON GROUP FOR EXPORTS */}
+                 <div className="flex gap-2">
+                    <button 
+                        onClick={handleExportMaster}
+                        className="flex items-center gap-2 bg-emerald-900/30 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-900/50 px-3 py-2 rounded-lg text-sm font-bold transition-all whitespace-nowrap"
+                        title="Exportar métricas agregadas por equipo"
+                    >
+                        <DatabaseIcon className="w-4 h-4" />
+                        Maestro (Equipos)
+                    </button>
+                    <button 
+                        onClick={handleExportReservations}
+                        className="flex items-center gap-2 bg-sky-900/30 text-sky-400 border border-sky-500/30 hover:bg-sky-900/50 px-3 py-2 rounded-lg text-sm font-bold transition-all whitespace-nowrap"
+                        title="Exportar log detallado de reservas"
+                    >
+                        <CalendarIcon className="w-4 h-4" />
+                        Reporte Reservas
+                    </button>
+                 </div>
               </div>
           </div>
 

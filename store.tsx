@@ -115,6 +115,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Ref to prevent overlapping sync calls
   const isSyncingRef = useRef(false);
+  
+  // CRITICAL: Ref to track IDs of sessions we just closed.
+  // This acts as a local blacklist to prevent the app from re-displaying them as "Active"
+  // if Google Sheets hasn't finished updating the inventory rows yet (race condition).
+  const recentlyClosedSessionsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     localStorage.setItem('crtic_app_state', JSON.stringify(state));
@@ -135,7 +140,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       // REQ: Protocolo de Conexión Periódica (Polling)
       // Se conecta cada 5 segundos al Sheets madre para traer actualizaciones.
-      // Se usa isSyncingRef para evitar llamadas superpuestas si la red está lenta.
       const interval = setInterval(() => {
           if (!isSyncingRef.current) {
               syncFromSheets();
@@ -168,7 +172,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // --- CRITICAL HELPER: ID SANITIZATION ---
-  // Removes _DUPE_ suffixes and trims spaces to ensure matches in Google Sheets
   const getRawId = (id: string | undefined | null) => {
       if (!id) return '';
       return String(id).split('_DUPE_')[0].trim();
@@ -191,7 +194,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // --- SYNC (READ) ---
   const syncFromSheets = async (): Promise<string> => {
-    // Protection against overlapping calls
     if (isSyncingRef.current) return "Sincronización en curso (saltada)";
     
     isSyncingRef.current = true;
@@ -231,7 +233,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             const rawStatus = getVal(row, ['Estado', 'Status', 'Estado Actual']) || 'Disponible';
             const rawObs = String(getVal(row, ['Observaciones', 'Observacion', 'Notas', 'Condición']) || '');
             
-            // DUPE HANDLING FOR FRONTEND UNIQUE KEYS
             if (equipmentMap.has(eqId)) {
                 const existing = equipmentMap.get(eqId);
                 if (existing?.name === name) return; 
@@ -321,7 +322,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
           const startVal = parseSheetDate(getVal(row, ['Fecha_Inicio', 'Inicio', 'Start']));
           const endVal = parseSheetDate(getVal(row, ['Fecha_Fin', 'Fin', 'End', 'Fecha_Termino']));
-
           const calculatedHours = calculateHoursFromDates(startVal, endVal);
 
           return {
@@ -338,15 +338,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           };
       });
 
-      const cloudActiveSessions = Array.from(reconstructedSessions.values());
+      // --- LOGIC TO PREVENT DUPLICATES / GHOSTS ---
+      // 1. Identify IDs that are definitely closed (present in Logs)
+      const closedSessionIds = new Set(cloudHistory.map(h => h.id));
+
+      // 2. Filter Active Sessions reconstructed from Inventory.
+      //    Remove if:
+      //    a) It exists in the Logs (Sheets hasn't updated Inventory yet)
+      //    b) It exists in 'recentlyClosedSessionsRef' (Local user just closed it)
+      const cloudActiveSessions = Array.from(reconstructedSessions.values())
+          .filter(s => !closedSessionIds.has(s.id) && !recentlyClosedSessionsRef.current.has(s.id));
 
       setState(prev => {
         const cloudSessionIds = new Set(cloudActiveSessions.map(s => s.id));
-        const pendingLocalSessions = prev.sessions.filter(localS => !cloudSessionIds.has(localS.id));
         
-        // --- DATA PRIORITY: CLOUD FIRST ---
-        // Just merge them. If closeSession does its job, it removes the local session from 'prev.sessions'
-        // BEFORE sync runs, so 'pendingLocalSessions' won't accidentally revive a closed session.
+        // Only keep local sessions that are NOT yet in cloud and NOT in blacklist
+        const pendingLocalSessions = prev.sessions.filter(localS => {
+            return !cloudSessionIds.has(localS.id) && 
+                   !closedSessionIds.has(localS.id) && 
+                   !recentlyClosedSessionsRef.current.has(localS.id);
+        });
+        
         const mergedSessions = [...cloudActiveSessions, ...pendingLocalSessions];
 
         const mergedEquipment = [...newEquipment];
@@ -368,7 +380,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         let mergedHistory: Session[] = [];
         if (data.logs) {
             // MERGE STRATEGY: Cloud History is Truth.
-            // We append missing local logs ONLY if they are NOT in the active cloud sessions (to avoid weird states).
             const cloudLogIds = new Set(cloudHistory.map(h => h.id));
             const missingLocalLogs = prev.history.filter(h => !cloudLogIds.has(h.id));
             mergedHistory = [...cloudHistory, ...missingLocalLogs];
@@ -415,22 +426,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       try {
           console.log(`Sending [${action}] to Sheets via no-cors...`);
-          
           await fetch(scriptUrl, {
               method: 'POST',
               mode: 'no-cors', 
               cache: 'no-cache',
               credentials: 'omit', 
-              redirect: 'follow', // Ensures we follow GAS redirects
+              redirect: 'follow', 
               keepalive: true, 
-              headers: { 
-                  'Content-Type': 'text/plain;charset=utf-8' 
-              },
+              headers: { 'Content-Type': 'text/plain;charset=utf-8' },
               body: bodyPayload
           });
-          
           console.log("Request sent.");
-
       } catch (e) {
           console.error(`Network Error sending [${action}]:`, e);
       }
@@ -444,11 +450,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const addSession = async (sessionData: Omit<Session, 'id' | 'status' | 'items'> & { id?: string, items?: string[] }) => {
     const newSessionId = sessionData.id || crypto.randomUUID();
-    
-    // PREPARE CLOUD UPDATE FIRST (Synchronously)
     const isInternalUser = state.currentUser?.role === UserRole.PLANTA_CRTIC;
-    
-    // CORRECTION: Use 'Prestado' instead of 'En Uso' to match CSV Data Validation
     const statusForSheet = isInternalUser ? 'Asignado Planta' : 'Prestado'; 
     const statusForApp = isInternalUser ? EquipmentStatus.ASSIGNED_INTERNAL : EquipmentStatus.IN_USE;
 
@@ -465,14 +467,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         condition: metaTag 
     }));
 
-    // OPTIMISTIC UPDATE
     setState(prev => {
         const newSession: Session = { ...sessionData, id: newSessionId, status: SessionStatus.ACTIVE, items: uniqueItems };
         const updatedEquipment = prev.equipment.map(e => uniqueItems.includes(e.id) ? { ...e, status: statusForApp, condition: metaTag } : e);
         return { ...prev, equipment: updatedEquipment, sessions: [newSession, ...prev.sessions] };
     });
 
-    // SEND TO CLOUD
     if (cloudUpdates.length > 0) {
         await sendToCloud('UPDATE_STATUS', { updates: cloudUpdates });
     }
@@ -487,10 +487,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return;
     }
 
-    // PREPARE CLOUD PAYLOAD
     const isInternalUser = state.currentUser?.role === UserRole.PLANTA_CRTIC;
-    
-    // CORRECTION: Use 'Prestado' instead of 'En Uso'
     const statusForSheet = isInternalUser ? 'Asignado Planta' : 'Prestado';
     const statusForApp = isInternalUser ? EquipmentStatus.ASSIGNED_INTERNAL : EquipmentStatus.IN_USE;
 
@@ -499,14 +496,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const cleanEnd = session.endDate ? (session.endDate.includes('T') ? session.endDate.split('T')[0] : session.endDate) : '';
 
     const metaTag = `SESION|${session.id}|${cleanProject}|${cleanStart}|${cleanEnd}|${session.userId}|${session.type}`;
-    
-    const cloudUpdates = [{ 
-        equipmentId: getRawId(equipmentId), 
-        status: statusForSheet, 
-        condition: metaTag 
-    }];
+    const cloudUpdates = [{ equipmentId: getRawId(equipmentId), status: statusForSheet, condition: metaTag }];
 
-    // OPTIMISTIC UI
     setState(prev => {
       const updatedEquipment = prev.equipment.map(e => e.id === equipmentId ? { ...e, status: statusForApp, condition: metaTag } : e);
       const updatedSessions = prev.sessions.map(s => s.id === sessionId ? { ...s, items: [...s.items, equipmentId] } : s);
@@ -518,13 +509,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const removeItemFromSession = async (sessionId: string, equipmentId: string) => {
       const cleanCondition = 'Devuelto';
-      
-      // PREPARE CLOUD PAYLOAD
-      const cloudUpdates = [{ 
-          equipmentId: getRawId(equipmentId), 
-          status: 'Disponible', // "Disponible" is correct per CSV
-          condition: cleanCondition 
-      }];
+      const cloudUpdates = [{ equipmentId: getRawId(equipmentId), status: 'Disponible', condition: cleanCondition }];
 
       setState(prev => {
         const updatedEquipment = prev.equipment.map(e => e.id === equipmentId ? { ...e, status: EquipmentStatus.AVAILABLE, condition: cleanCondition } : e);
@@ -538,6 +523,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const closeSession = async (sessionId: string, returnComment?: string) => {
     const session = state.sessions.find(s => s.id === sessionId);
     if (!session) return;
+
+    // --- REGISTER CLOSED SESSION LOCALLY TO PREVENT GHOSTS ---
+    recentlyClosedSessionsRef.current.add(sessionId);
+    // Remove from blacklist after 45 seconds (assumes cloud sync catches up by then)
+    setTimeout(() => {
+        recentlyClosedSessionsRef.current.delete(sessionId);
+    }, 45000);
 
     const finalComment = returnComment || 'Devuelto Ok';
     const now = new Date();
@@ -579,15 +571,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         Observations: finalComment
     };
 
-    // 3. NO OPTIMISTIC UPDATE FOR HISTORY (PER USER REQUEST)
-    // We remove the session from LOCAL 'sessions' so it disappears from the active list immediately.
-    // But we DO NOT add it to 'history' locally. We wait for Sheets to confirm it.
+    // 3. NO OPTIMISTIC UPDATE FOR HISTORY
+    // Only remove from Active Sessions. We trust the Cloud Log for History.
     setState(prev => {
-      // Clean up equipment state optimistically to "Available" so user sees green immediately
       const updatedEquipment = prev.equipment.map(e => session.items.includes(e.id) ? { ...e, status: EquipmentStatus.AVAILABLE, condition: finalComment } : e);
-      // Remove from active sessions (prevent ghost in next sync)
       const updatedSessions = prev.sessions.filter(s => s.id !== sessionId); 
-      // Do NOT add to history.
       return { ...prev, equipment: updatedEquipment, sessions: updatedSessions };
     });
 
@@ -598,10 +586,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await sendToCloud('LOG_SESSION', { logData: logPayload });
 
     // 5. SAFETY WAIT & SYNC (BLOCKING)
-    // Waiting for Sheets to process the Log and Status Update.
-    // CHANGED: Increased from 4000ms to 6000ms per user request (+2s buffer).
-    console.log("Protocolo de cierre: Esperando confirmación de Sheets (6000ms)...");
-    await new Promise(resolve => setTimeout(resolve, 6000));
+    console.log("Protocolo de cierre: Esperando confirmación de Sheets (4000ms)...");
+    await new Promise(resolve => setTimeout(resolve, 4000));
     await syncFromSheets();
   };
 
@@ -612,14 +598,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return; 
     }
 
-    // PREPARE CLOUD
-    // FIXED: Title Case. "Asignado Planta" is correct per CSV.
-    const cloudUpdates = [{ 
-        equipmentId: getRawId(data.equipmentId), 
-        status: 'Asignado Planta' 
-    }];
+    const cloudUpdates = [{ equipmentId: getRawId(data.equipmentId), status: 'Asignado Planta' }];
 
-    // OPTIMISTIC
     setState(prev => {
        const newAssignment: InternalAssignment = { ...data, id: crypto.randomUUID(), status: AssignmentStatus.ACTIVE };
        const updatedEquipment = prev.equipment.map(e => e.id === data.equipmentId ? { ...e, status: EquipmentStatus.ASSIGNED_INTERNAL } : e);
@@ -633,12 +613,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const assignment = state.assignments.find(a => a.id === assignmentId);
       if(!assignment) return;
       
-      // PREPARE CLOUD
-      const cloudUpdates = [{ 
-          equipmentId: getRawId(assignment.equipmentId), 
-          status: 'Disponible', 
-          condition: returnCondition 
-      }];
+      const cloudUpdates = [{ equipmentId: getRawId(assignment.equipmentId), status: 'Disponible', condition: returnCondition }];
 
       setState(prev => {
           const updatedEquipment = prev.equipment.map(e => e.id === assignment.equipmentId ? { ...e, status: EquipmentStatus.AVAILABLE, condition: returnCondition } : e);
@@ -648,7 +623,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       
       await sendToCloud('UPDATE_STATUS', { updates: cloudUpdates });
 
-      // ADDED: Protocolo de espera y sync para asignaciones internas también
       console.log("Retorno Interno: Esperando confirmación de Sheets (2000ms)...");
       await new Promise(resolve => setTimeout(resolve, 2000));
       await syncFromSheets();

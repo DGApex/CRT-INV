@@ -11,6 +11,9 @@ export const MyReservationsView: React.FC = () => {
   const [returnModalOpen, setReturnModalOpen] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [returnComment, setReturnComment] = useState('');
+  
+  // UI Freeze State
+  const [isProcessing, setIsProcessing] = useState(false);
 
   // Filter Active Sessions for Current User
   const myActiveSessions = useMemo(() => {
@@ -24,12 +27,26 @@ export const MyReservationsView: React.FC = () => {
       setReturnModalOpen(true);
   };
 
-  const confirmReturn = () => {
+  const confirmReturn = async () => {
       if (selectedSessionId) {
-          const finalComment = returnComment.trim() || 'Devuelto Ok';
-          closeSession(selectedSessionId, finalComment);
-          setReturnModalOpen(false);
-          setSelectedSessionId(null);
+          // 1. FREEZE UI
+          setIsProcessing(true);
+          
+          try {
+              const finalComment = returnComment.trim() || 'Devuelto Ok';
+              
+              // 2. WAIT FOR STORE (Includes the 4s delay + Sync)
+              await closeSession(selectedSessionId, finalComment);
+              
+          } catch (error) {
+              console.error("Error closing session:", error);
+              alert("Hubo un error de conexión, pero es probable que el sistema intente recuperarse en la próxima sincronización.");
+          } finally {
+              // 3. UNFREEZE AND CLOSE ONLY AFTER EVERYTHING IS DONE
+              setIsProcessing(false);
+              setReturnModalOpen(false);
+              setSelectedSessionId(null);
+          }
       }
   };
 
@@ -118,43 +135,69 @@ export const MyReservationsView: React.FC = () => {
 
       {/* RETURN MODAL */}
       {returnModalOpen && (
-        <div className="fixed inset-0 bg-black/90 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in">
-            <div className="bg-neutral-900 rounded-2xl border border-neutral-800 shadow-2xl w-full max-w-lg animate-in zoom-in-95">
+        <div className="fixed inset-0 bg-black/95 backdrop-blur-md z-[100] flex items-center justify-center p-4 animate-in fade-in duration-300">
+            <div className="bg-neutral-900 rounded-2xl border border-neutral-800 shadow-2xl w-full max-w-lg animate-in zoom-in-95 overflow-hidden">
+                
+                {/* HEADLINE */}
                 <div className="p-6 border-b border-neutral-800">
-                    <h3 className="text-xl font-bold text-white">Confirmar Devolución</h3>
-                    <p className="text-neutral-400 text-sm mt-1">Vas a cerrar la sesión y liberar los equipos.</p>
+                    <h3 className="text-xl font-bold text-white">
+                        {isProcessing ? 'Procesando Devolución...' : 'Confirmar Devolución'}
+                    </h3>
+                    {!isProcessing && (
+                        <p className="text-neutral-400 text-sm mt-1">Vas a cerrar la sesión y liberar los equipos.</p>
+                    )}
                 </div>
                 
+                {/* CONTENT */}
                 <div className="p-6 space-y-4">
-                    <div className="bg-yellow-900/10 border border-yellow-900/30 p-4 rounded-xl">
-                        <label className="block text-xs font-bold text-yellow-500 uppercase mb-2">¿Alguna novedad o daño?</label>
-                        <textarea 
-                            className="w-full bg-neutral-950 border border-neutral-800 rounded-xl p-3 text-white text-sm focus:border-yellow-500 focus:ring-1 focus:ring-yellow-500 outline-none resize-none"
-                            rows={3}
-                            placeholder="Ej: Todo ok, o 'La cámara tiene un rayón en la lente'..."
-                            value={returnComment}
-                            onChange={(e) => setReturnComment(e.target.value)}
-                        />
-                        <p className="text-[10px] text-neutral-500 mt-2">
-                            Si dejas esto vacío, se asumirá que todo está "Ok".
-                        </p>
-                    </div>
+                    {isProcessing ? (
+                        <div className="py-8 flex flex-col items-center justify-center text-center space-y-4">
+                            {/* LOADING SPINNER */}
+                            <div className="relative w-16 h-16">
+                                <div className="absolute inset-0 border-4 border-neutral-800 rounded-full"></div>
+                                <div className="absolute inset-0 border-4 border-sky-500 rounded-full border-t-transparent animate-spin"></div>
+                            </div>
+                            <div className="space-y-1">
+                                <p className="text-sky-400 font-bold animate-pulse">Sincronizando con Google Sheets</p>
+                                <p className="text-neutral-500 text-xs max-w-xs mx-auto">
+                                    Por favor espera unos segundos para asegurar que no se dupliquen los datos...
+                                </p>
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="bg-yellow-900/10 border border-yellow-900/30 p-4 rounded-xl">
+                            <label className="block text-xs font-bold text-yellow-500 uppercase mb-2">¿Alguna novedad o daño?</label>
+                            <textarea 
+                                className="w-full bg-neutral-950 border border-neutral-800 rounded-xl p-3 text-white text-sm focus:border-yellow-500 focus:ring-1 focus:ring-yellow-500 outline-none resize-none"
+                                rows={3}
+                                placeholder="Ej: Todo ok, o 'La cámara tiene un rayón en la lente'..."
+                                value={returnComment}
+                                onChange={(e) => setReturnComment(e.target.value)}
+                            />
+                            <p className="text-[10px] text-neutral-500 mt-2">
+                                Si dejas esto vacío, se asumirá que todo está "Ok".
+                            </p>
+                        </div>
+                    )}
                 </div>
 
-                <div className="p-6 border-t border-neutral-800 flex gap-3 bg-neutral-950 rounded-b-2xl">
-                    <button 
-                        onClick={() => setReturnModalOpen(false)} 
-                        className="flex-1 py-3 bg-neutral-800 text-neutral-300 font-medium rounded-xl hover:bg-neutral-700 transition-colors"
-                    >
-                        Cancelar
-                    </button>
-                    <button 
-                        onClick={confirmReturn} 
-                        className="flex-1 py-3 bg-sky-600 text-white font-bold rounded-xl hover:bg-sky-500 shadow-lg shadow-sky-900/20 transition-colors"
-                    >
-                        Confirmar y Devolver
-                    </button>
-                </div>
+                {/* FOOTER */}
+                {!isProcessing && (
+                    <div className="p-6 border-t border-neutral-800 flex gap-3 bg-neutral-950">
+                        <button 
+                            onClick={() => setReturnModalOpen(false)} 
+                            className="flex-1 py-3 bg-neutral-800 text-neutral-300 font-medium rounded-xl hover:bg-neutral-700 transition-colors"
+                        >
+                            Cancelar
+                        </button>
+                        <button 
+                            onClick={confirmReturn} 
+                            className="flex-1 py-3 bg-sky-600 text-white font-bold rounded-xl hover:bg-sky-500 shadow-lg shadow-sky-900/20 transition-colors"
+                        >
+                            Confirmar y Devolver
+                        </button>
+                    </div>
+                )}
             </div>
         </div>
       )}
