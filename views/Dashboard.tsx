@@ -127,11 +127,11 @@ const ReservationModal: React.FC<ReservationModalProps> = ({ isOpen, preSelected
                         <div className="grid grid-cols-2 gap-3">
                             <div>
                                 <label className="text-xs font-bold text-neutral-500 uppercase">Desde</label>
-                                <input type="date" required disabled={isSubmitting} className="w-full mt-1 bg-neutral-950 border border-neutral-700 rounded-xl p-3 text-sm text-white disabled:opacity-50" value={form.startDate} onChange={e => setForm({...form, startDate: e.target.value})} />
+                                <input type="date" required disabled={isSubmitting} className="w-full mt-1 bg-neutral-950 border border-neutral-700 rounded-xl p-3 text-sm text-white disabled:opacity-50 [color-scheme:dark]" value={form.startDate} onChange={e => setForm({...form, startDate: e.target.value})} />
                             </div>
                             <div>
                                 <label className="text-xs font-bold text-neutral-500 uppercase">Hasta</label>
-                                <input type="date" required disabled={isSubmitting} className="w-full mt-1 bg-neutral-950 border border-neutral-700 rounded-xl p-3 text-sm text-white disabled:opacity-50" value={form.endDate} onChange={e => setForm({...form, endDate: e.target.value})} />
+                                <input type="date" required disabled={isSubmitting} className="w-full mt-1 bg-neutral-950 border border-neutral-700 rounded-xl p-3 text-sm text-white disabled:opacity-50 [color-scheme:dark]" value={form.endDate} onChange={e => setForm({...form, endDate: e.target.value})} />
                             </div>
                         </div>
                     </form>
@@ -381,6 +381,73 @@ export const Dashboard: React.FC = () => {
       });
   }, [currentDate, viewMode]);
 
+  // NAV LIMIT CHECK (FUTURE)
+  const canGoNext = useMemo(() => {
+      const nextTest = new Date(currentDate);
+      if (viewMode === 'month') {
+          nextTest.setMonth(nextTest.getMonth() + 1);
+      } else {
+          nextTest.setDate(nextTest.getDate() + 7);
+      }
+      
+      const today = new Date();
+      // Logic: Calculate roughly the month diff of the TARGET date from today
+      const diff = (nextTest.getFullYear() - today.getFullYear()) * 12 + (nextTest.getMonth() - today.getMonth());
+      
+      // Allow if difference is <= 2 months
+      return diff <= 2;
+  }, [currentDate, viewMode]);
+
+  // NAV LIMIT CHECK (PAST)
+  const canGoPrev = useMemo(() => {
+      const today = new Date();
+      const current = new Date(currentDate);
+      
+      if (viewMode === 'month') {
+          // If current month is same as today's month (or later), we can't go back further than today's month
+          return current.getMonth() !== today.getMonth() || current.getFullYear() !== today.getFullYear();
+      } else {
+          // Week view: Prevent going if the previous week start is before the start of THIS week
+          const prevWeekTest = new Date(current);
+          prevWeekTest.setDate(prevWeekTest.getDate() - 7);
+          
+          // Get start of Today's week
+          const todayWeekStart = new Date(today);
+          todayWeekStart.setDate(today.getDate() - (today.getDay() === 0 ? 6 : today.getDay() - 1));
+          todayWeekStart.setHours(0,0,0,0);
+          
+          // Get start of target Prev Week
+          const prevWeekStart = new Date(prevWeekTest);
+          prevWeekStart.setDate(prevWeekTest.getDate() - (prevWeekTest.getDay() === 0 ? 6 : prevWeekTest.getDay() - 1));
+          prevWeekStart.setHours(0,0,0,0);
+
+          return prevWeekStart >= todayWeekStart;
+      }
+  }, [currentDate, viewMode]);
+
+  // NEW NAV HANDLERS
+  const handlePrevPeriod = () => {
+      if (!canGoPrev) return;
+      const newDate = new Date(currentDate);
+      if (viewMode === 'month') {
+          newDate.setMonth(newDate.getMonth() - 1);
+      } else {
+          newDate.setDate(newDate.getDate() - 7);
+      }
+      setCurrentDate(newDate);
+  };
+
+  const handleNextPeriod = () => {
+      if (!canGoNext) return;
+      const newDate = new Date(currentDate);
+      if (viewMode === 'month') {
+          newDate.setMonth(newDate.getMonth() + 1);
+      } else {
+          newDate.setDate(newDate.getDate() + 7);
+      }
+      setCurrentDate(newDate);
+  };
+
   const getDayEvents = (date: Date) => {
       const dateKey = date.toISOString().split('T')[0];
       const sEvents = state.sessions
@@ -395,10 +462,19 @@ export const Dashboard: React.FC = () => {
             title: s.projectName,
             sessionType: s.type, 
             ...s, 
-            userName: state.users.find(u => u.id === s.userId)?.name 
+            userName: state.users.find(u => u.id === s.userId)?.name,
+            // RESOLVE ITEM NAMES FOR DISPLAY
+            itemNames: s.items.map(id => state.equipment.find(e => e.id === id)?.name).filter(Boolean) as string[]
         }));
       
-      const aEvents = isInternal ? state.assignments.filter(a => a.status === 'Activa' && a.assignedDate.split('T')[0] <= dateKey).map(a => ({ type: 'ASSIGNMENT', title: 'Asignación', ...a, userName: state.users.find(u => u.id === a.userId)?.name, equipName: state.equipment.find(e => e.id === a.equipmentId)?.name })) : [];
+      const aEvents = isInternal ? state.assignments.filter(a => a.status === 'Activa' && a.assignedDate.split('T')[0] <= dateKey).map(a => ({ 
+          type: 'ASSIGNMENT', 
+          title: 'Asignación', 
+          ...a, 
+          userName: state.users.find(u => u.id === a.userId)?.name, 
+          equipName: state.equipment.find(e => e.id === a.equipmentId)?.name,
+          itemNames: [state.equipment.find(e => e.id === a.equipmentId)?.name || ''] 
+        })) : [];
       return [...sEvents, ...aEvents];
   };
 
@@ -410,6 +486,9 @@ export const Dashboard: React.FC = () => {
       if (sessionType === SessionType.INTERNAL_PRODUCTION) return 'bg-emerald-900/50 text-emerald-200 border-emerald-700';
       return 'bg-neutral-800 text-neutral-300';
   }
+
+  // Determine max events to show based on view mode
+  const maxEventsToShow = viewMode === 'week' ? 10 : 2;
 
   return (
     <div className="space-y-6 md:space-y-8 pb-20 md:pb-10">
@@ -479,7 +558,15 @@ export const Dashboard: React.FC = () => {
       {/* CALENDAR */}
       <div className="bg-neutral-900 rounded-2xl border border-neutral-800 overflow-hidden">
         <div className="p-4 border-b border-neutral-800 flex justify-between items-center">
-            <h3 className="font-bold text-white capitalize">{currentDate.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' })}</h3>
+            <div className="flex items-center gap-4">
+                <h3 className="font-bold text-white capitalize text-lg">{currentDate.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' })}</h3>
+                <div className="flex items-center bg-neutral-950 rounded-lg border border-neutral-800 p-0.5">
+                    <button onClick={handlePrevPeriod} disabled={!canGoPrev} className={`p-1 rounded text-neutral-400 ${!canGoPrev ? 'opacity-30 cursor-not-allowed' : 'hover:bg-neutral-800 hover:text-white'}`}><ChevronLeftIcon className="w-4 h-4"/></button>
+                    <div className="w-px h-4 bg-neutral-800"></div>
+                    <button onClick={handleNextPeriod} disabled={!canGoNext} className={`p-1 rounded text-neutral-400 ${!canGoNext ? 'opacity-30 cursor-not-allowed' : 'hover:bg-neutral-800 hover:text-white'}`}><ChevronRightIcon className="w-4 h-4"/></button>
+                </div>
+            </div>
+            
             <div className="flex gap-2">
                 <button onClick={() => setViewMode('month')} className={`px-2 py-1 text-xs rounded ${viewMode==='month' ? 'bg-neutral-700 text-white':'text-neutral-500'}`}>Mes</button>
                 <button onClick={() => setViewMode('week')} className={`px-2 py-1 text-xs rounded ${viewMode==='week' ? 'bg-neutral-700 text-white':'text-neutral-500'}`}>Sem</button>
@@ -491,18 +578,47 @@ export const Dashboard: React.FC = () => {
                 {calendarDays.map((date, i) => {
                     const events = getDayEvents(date);
                     return (
-                        <button key={i} onClick={() => openReservation(date)} className={`min-h-[80px] p-1 rounded border text-left flex flex-col gap-1 ${date.getMonth() === currentDate.getMonth() ? 'bg-neutral-900 border-neutral-800' : 'opacity-40 border-transparent'}`}>
+                        <button 
+                            key={i} 
+                            onClick={() => openReservation(date)} 
+                            className={`p-1 rounded border text-left flex flex-col gap-1 
+                                ${viewMode === 'week' ? 'min-h-[400px]' : 'min-h-[80px]'} 
+                                ${date.getMonth() === currentDate.getMonth() ? 'bg-neutral-900 border-neutral-800' : 'opacity-40 border-transparent'}
+                            `}
+                        >
                             <span className="text-xs text-neutral-500 font-bold">{date.getDate()}</span>
-                            {events.slice(0, 2).map((ev: any, idx) => (
+                            {events.slice(0, maxEventsToShow).map((ev: any, idx) => (
                                 <div 
                                     key={idx} 
-                                    className={`text-[8px] px-1 rounded truncate w-full border ${getEventColor(ev.type, ev.sessionType)}`}
+                                    className={`rounded w-full border ${getEventColor(ev.type, ev.sessionType)} ${viewMode === 'week' ? 'p-2' : 'px-1 text-[8px] truncate'}`}
                                     title={`Reservado por: ${ev.userName || 'Desconocido'}`}
                                 >
-                                    {ev.title || ev.equipName}
+                                    {/* CONTENT FOR MONTH VIEW */}
+                                    {viewMode === 'month' && (
+                                        <>{ev.title || ev.equipName}</>
+                                    )}
+
+                                    {/* CONTENT FOR WEEK VIEW */}
+                                    {viewMode === 'week' && (
+                                        <div className="flex flex-col gap-1">
+                                            <div className="font-bold text-xs truncate">{ev.title || ev.equipName}</div>
+                                            <div className="text-[10px] opacity-80 truncate">{ev.userName}</div>
+                                            
+                                            {/* ITEM DETAIL */}
+                                            {ev.type === 'SESSION' && ev.itemNames && (
+                                                <div className="mt-1 pt-1 border-t border-white/10 text-[9px] flex flex-col">
+                                                    <span className="font-bold">{ev.itemNames.length} Items:</span>
+                                                    <span className="truncate opacity-70">
+                                                        {ev.itemNames.slice(0, 3).join(', ')}
+                                                        {ev.itemNames.length > 3 && '...'}
+                                                    </span>
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
                                 </div>
                             ))}
-                            {events.length > 2 && <div className="text-[8px] text-neutral-600 pl-1">+{events.length - 2}</div>}
+                            {events.length > maxEventsToShow && <div className="text-[8px] text-neutral-600 pl-1">+{events.length - maxEventsToShow}</div>}
                         </button>
                     )
                 })}

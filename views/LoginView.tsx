@@ -119,7 +119,7 @@ export const LoginView: React.FC = () => {
                             <option value="">Seleccionar...</option>
                             {activeUsers.map(u => (
                                 <option key={u.id} value={u.id}>
-                                    {u.name} — {u.role === UserRole.PLANTA_CRTIC ? 'PLANTA' : 'RESIDENTE'}
+                                    {u.name} ({u.role})
                                 </option>
                             ))}
                         </select>

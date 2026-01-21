@@ -191,7 +191,7 @@ export const AdminStatsView: React.FC = () => {
               Proyecto: s.projectName,
               Tipo_Sesion: s.type,
               Usuario: user ? user.name : s.userId,
-              Rol_Usuario: user ? user.role : 'Desconocido',
+              Tipo_Usuario: user ? user.role : 'Desconocido', // UPDATED HEADER NAME
               Fecha_Inicio: displayDate(s.startDate),
               Fecha_Fin: displayDate(s.endDate),
               Estado: s.status, // Activa vs Cerrada

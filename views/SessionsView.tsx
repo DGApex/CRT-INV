@@ -181,11 +181,11 @@ export const SessionsView: React.FC = () => {
                 </div>
                  <div>
                     <label className="block text-xs font-semibold text-slate-500 mb-1">Fecha Inicio</label>
-                    <input type="date" required disabled={isSubmitting} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-sm focus:ring-1 focus:ring-sky-500 outline-none text-white disabled:opacity-50" value={newSessionData.startDate} onChange={e => setNewSessionData({...newSessionData, startDate: e.target.value})} />
+                    <input type="date" required disabled={isSubmitting} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-sm focus:ring-1 focus:ring-sky-500 outline-none text-white disabled:opacity-50 [color-scheme:dark]" value={newSessionData.startDate} onChange={e => setNewSessionData({...newSessionData, startDate: e.target.value})} />
                 </div>
                 <div>
                     <label className="block text-xs font-semibold text-slate-500 mb-1">Fecha Término (Opcional)</label>
-                    <input type="date" disabled={isSubmitting} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-sm focus:ring-1 focus:ring-sky-500 outline-none text-white disabled:opacity-50" value={newSessionData.endDate} onChange={e => setNewSessionData({...newSessionData, endDate: e.target.value})} />
+                    <input type="date" disabled={isSubmitting} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-sm focus:ring-1 focus:ring-sky-500 outline-none text-white disabled:opacity-50 [color-scheme:dark]" value={newSessionData.endDate} onChange={e => setNewSessionData({...newSessionData, endDate: e.target.value})} />
                 </div>
                 <div className="md:col-span-2 flex justify-end gap-2 mt-2">
                     <button type="button" disabled={isSubmitting} onClick={() => setIsCreating(false)} className="px-4 py-2 text-slate-400 text-sm hover:text-white disabled:opacity-50">Cancelar</button>
